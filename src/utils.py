@@ -1,6 +1,22 @@
 """
-Miscellaneous utility functions for pre-processing and analysis.
-Utility functions for optimization algorigthms/fitness function.
+Core utility functions and variables for pre-processing, optimization and analysis.
+
+Referenced by: main.ipynb, pre_optimization.py, optimization.py
+
+Includes:
+- Codon tables loading
+- GC content calculations
+- CAI calculation
+- Unwanted motifs counting
+- mRNA folding energy calculations (with ViennaRNA if available)
+- Accessibility score calculation
+- Repetitive sequence counting
+- Cryptic splice site counting
+- Internal start codon checking
+- DNA to protein translation
+- Protein back-translation
+- Synonymous codon retrieval
+- Numba-accelerated helper functions
 """
 
 import os
