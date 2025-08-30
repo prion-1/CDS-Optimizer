@@ -3,6 +3,10 @@
 !.gitignore
 !**/.gitkeep
 
-!main.ipynb
 !/data/codon_tables/
 !/data/codon_tables/*
+
+!main.ipynb
+!/src/
+!/src/utils.py
+
