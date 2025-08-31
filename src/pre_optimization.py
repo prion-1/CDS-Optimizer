@@ -1,26 +1,58 @@
 """
-Strategies for initial codon optimization. The output of this module is what is then fed into the genetic algorithm.
-Three strategies to choose from: maximum CAI (MC), percentile matching (PM), 
+Strategies for initial codon optimization. The output of this module is
+then fed into the genetic algorithm.
 
-and distribution matching (DM).
-
-
-MC uses the most frequent host codon for each AA.
-PM tries to match the input codon usage pattern to the host codon usage pattern by percentile, preserving the codon
-bias of the input while converting it into host codons of corresponding frequencies.
-
-
-CHARMING!!!
-
-^^^^^^^^^^^^^^^^^^^^
-^^^^^^^^^^^^^^^^^^^^
+Available strategies:
+- Maximum CAI (MC): most frequent host codon per AA.
+- Percentile matching (PM): map input codon usage percentiles to host.
+- Charming (CH): gentle 5' translational ramp + simple repeat avoidance.
 """
 
-import numpy as np
 from typing import Dict, Tuple, Optional
 from collections import defaultdict
-from scipy.stats import wasserstein_distance
-from itertools import permutations
+
+# Charming defaults (tunable)
+CH_PAIR_WEIGHT = 1.5
+CH_RANK_PENALTY = 2.0
+CH_WOBBLE_BONUS = 0.5
+CH_WOBBLE_PENALTY = 0.3
+CH_WOBBLE_EARLY_LEN = 12
+
+CH_SEARCH_WINDOW = 3           # ranks around target to consider
+CH_RAMP_MIN = 8
+CH_RAMP_MAX = 30
+CH_RAMP_SCALE_DIV = 4          # ~ first 25% + offset
+CH_RAMP_OFFSET = 6
+
+CH_HOMOPOLYMER_THRESHOLD = 5   # e.g., AAAAA
+CH_ALT_DINUC_REPEATS = 3       # e.g., ATATAT/CGCGCG
+
+# Charming: junction 4-mer heuristics (last two of c1 + first two of c2)
+# - Strongly problematic (hard homopolymers at the junction)
+CH_JUNCTION_STRONG_BAD_4MERS = {
+    "GGGG", "CCCC",
+}
+
+# - Moderately problematic: slippery seeds, short homopolymers, alternating runs, palindromes
+CH_JUNCTION_MOD_BAD_4MERS = {
+    # Slippery-like seeds (include mirrors of existing ones)
+    "GAAA", "TTTC", "AAAG", "CTTT",
+    # Short homopolymers and simple repeats
+    "AAAA", "TTTT", "ATAT", "TATA", "CGCG", "GCGC",
+    # Palindromic 4-mers (hairpin seeds, also includes CpG variants)
+    "AGCT", "TCGA", "TGCA", "ACGT", "GTAC",
+}
+
+# Host-specific junction patterns (light penalties to avoid over-filtering)
+CH_JUNCTION_EUK_BAD_4MERS = {
+    # Donor-like seeds across junctions
+    "AGGT", "CAGG", "GTAG",
+}
+
+CH_JUNCTION_PROK_BAD_4MERS = {
+    # Shine–Dalgarno-like seeds within CDS
+    "AGGA", "GGAG",
+}
 
 from .utils import (
     load_codon_table, GENETIC_CODE, AA_TO_CODONS,
@@ -158,129 +190,208 @@ def percentile_matching_optimization(sequence: str, host: str) -> str:
     return ''.join(optimized)
 
 
-# TODO make charming
-'''
-######## PROBABLY REPLACE BY CHARMING
-def distribution_matching_optimization(sequence: str, host: str) -> str:
+def charming_optimization(
+    sequence: str,
+    host: str,
+    is_eukaryote: bool,
+    *,
+    pair_weight: float = CH_PAIR_WEIGHT,
+    rank_penalty: float = CH_RANK_PENALTY,
+    wobble_bonus: float = CH_WOBBLE_BONUS,
+    wobble_penalty: float = CH_WOBBLE_PENALTY,
+    wobble_early_len: int = CH_WOBBLE_EARLY_LEN,
+    search_window: int = CH_SEARCH_WINDOW,
+    ramp_min: int = CH_RAMP_MIN,
+    ramp_max: int = CH_RAMP_MAX,
+    ramp_scale_div: int = CH_RAMP_SCALE_DIV,
+    ramp_offset: int = CH_RAMP_OFFSET,
+    homopolymer_threshold: int = CH_HOMOPOLYMER_THRESHOLD,
+    alt_dinuc_repeats: int = CH_ALT_DINUC_REPEATS,
+    # Feature toggles (auto-inferred when None)
+    avoid_splice: Optional[bool] = None,
+    avoid_sd: Optional[bool] = None,
+    avoid_cpg: Optional[bool] = None,
+    dam_dcm_sensitive: Optional[bool] = None,
+) -> str:
     """
-    Optimize codons to match distribution shape as closely as possible.
-    Uses Earth Mover's Distance for optimal mapping.
-    
-    Args:
-        sequence: Input DNA sequence
-        host: Host organism
-    
+    Charming: Codon Harmonization with a gentle 5' translational ramp and minimal interference.
+
+    - First N codons form a ramp: choose lower→mid adaptiveness codons to reduce early ribosome pile-ups.
+    - After the ramp, prefer the host's best codons for throughput (higher CAI).
+    - While building, avoid simple pathologies: long homopolymers and alternating AT/CG dinucleotide runs.
+
     Returns:
-        Optimized DNA sequence matching distribution
+        Harmonized DNA sequence
     """
     codon_table = load_codon_table(host)
-    
-    # Analyze codon usage in original sequence
-    aa_codon_counts = defaultdict(lambda: defaultdict(int))
-    codon_positions = defaultdict(list)
-    
-    for i in range(0, len(sequence), 3):
-        codon = sequence[i:i+3]
-        aa = GENETIC_CODE.get(codon, 'X')
-        if aa != 'X' and aa != '*':  # Skip stop codons
-            aa_codon_counts[aa][codon] += 1
-            codon_positions[codon].append(i)
-    
-    # Create distribution-based mapping
-    aa_codon_mapping = {}
-    
-    for aa, codon_counts in aa_codon_counts.items():
-        # Get CDS codons and their counts
-        cds_codons = list(codon_counts.keys())
-        cds_counts = list(codon_counts.values())
-        
-        # Normalize to create distribution
-        total_count = sum(cds_counts)
-        cds_distribution = [c/total_count for c in cds_counts] if total_count > 0 else [1.0/len(cds_counts)] * len(cds_counts)
-        
-        # Get host codons and their frequencies
-        host_codons = AA_TO_CODONS.get(aa, [])
-        host_freqs = [codon_table.get(c, 0) for c in host_codons]
-        
-        # Handle edge cases
-        if not host_codons:
-            for codon in cds_codons:
-                aa_codon_mapping[(aa, codon)] = codon
-            continue
-        
-        if len(cds_codons) == 1:
-            # Single codon - use best host codon
-            best_host = max(host_codons, key=lambda c: codon_table.get(c, 0))
-            aa_codon_mapping[(aa, cds_codons[0])] = best_host
-            continue
-        
-        # For small numbers of codons (≤6), try all permutations
-        if len(cds_codons) <= 6 and len(cds_codons) <= len(host_codons):
-            best_distance = float('inf')
-            best_mapping = {}
-            
-            # Try all possible mappings
-            for perm in permutations(host_codons, len(cds_codons)):
-                # Calculate distribution of this mapping
-                mapped_freqs = [codon_table.get(h, 0) for h in perm]
-                
-                # Normalize host frequencies
-                total_freq = sum(mapped_freqs)
-                if total_freq > 0:
-                    host_distribution = [f/total_freq for f in mapped_freqs]
-                else:
-                    host_distribution = [1.0/len(mapped_freqs)] * len(mapped_freqs)
-                
-                # Calculate Earth Mover's Distance
-                try:
-                    distance = wasserstein_distance(cds_distribution, host_distribution)
-                except:
-                    # Fallback to simple difference if wasserstein fails
-                    distance = sum(abs(a - b) for a, b in zip(cds_distribution, host_distribution))
-                
-                if distance < best_distance:
-                    best_distance = distance
-                    best_mapping = dict(zip(cds_codons, perm))
-            
-            # Apply best mapping
-            for cds_codon, host_codon in best_mapping.items():
-                aa_codon_mapping[(aa, cds_codon)] = host_codon
+
+    # Infer broad host features and allow overrides
+    h = host.lower()
+
+    def _is_vertebrate(host_lower: str) -> bool:
+        tokens = (
+            'hsapiens', 'mmusculus', 'rnorvegicus', 'drerio', 'danio', 'ggallus',
+            'mmulatta', 'ptroglodytes', 'btaurus', 'cfamiliaris', 'xlaevis', 'xtropicalis'
+        )
+        return any(t in host_lower for t in tokens)
+
+    if avoid_splice is None:
+        avoid_splice = bool(is_eukaryote)
+    if avoid_sd is None:
+        avoid_sd = not bool(is_eukaryote)
+    if avoid_cpg is None:
+        avoid_cpg = bool(is_eukaryote) and _is_vertebrate(h)
+    if dam_dcm_sensitive is None:
+        dam_dcm_sensitive = (h == 'ecoli')
+
+    def get_codon_pair_score(codon1: str, codon2: str) -> float:
+        """Heuristic codon-pair preference score (DNA alphabet)."""
+        cai1 = codon_table.get(codon1, 0.1)
+        cai2 = codon_table.get(codon2, 0.1)
+
+        # Base: rare-rare discouraged, common-common encouraged, transitions slightly encouraged
+        if cai1 < 0.3 and cai2 < 0.3:
+            base = -2.0
+        elif cai1 > 0.7 and cai2 > 0.7:
+            base = 1.0
+        elif (cai1 > 0.7 and cai2 < 0.3) or (cai1 < 0.3 and cai2 > 0.7):
+            base = 0.5
         else:
-            # Too many codons - use greedy matching based on rank
-            # Sort both by frequency/count
-            cds_sorted = sorted(zip(cds_codons, cds_counts), key=lambda x: -x[1])
-            host_sorted = sorted(host_codons, key=lambda c: -codon_table.get(c, 0))
-            
-            # Map by rank
-            for i, (cds_codon, _) in enumerate(cds_sorted):
-                host_idx = min(i, len(host_sorted) - 1)
-                aa_codon_mapping[(aa, cds_codon)] = host_sorted[host_idx]
-    
-    # Apply mapping to sequence
+            base = 0.0
+
+        # Discourage exact codon repeats (frameshift/slippage concerns)
+        if codon1 == codon2:
+            base -= 0.5
+
+        # Avoid problematic junctions (last 2 + first 2)
+        junction = codon1[1:] + codon2[:2]
+        if junction in CH_JUNCTION_STRONG_BAD_4MERS:
+            base -= 1.0
+        elif junction in CH_JUNCTION_MOD_BAD_4MERS:
+            base -= 0.5
+
+        # Host-group tweaks (feature-flag driven)
+        if avoid_cpg:
+            # CpG at the boundary (vertebrate-focused)
+            if codon1[2] == 'C' and codon2[0] == 'G':
+                base -= 0.8
+        if avoid_splice:
+            # Eukaryote splice donor-like seeds across junctions
+            if junction in CH_JUNCTION_EUK_BAD_4MERS:
+                base -= 0.4
+        if avoid_sd:
+            # Prokaryotic SD-like seeds inside coding regions
+            if junction in CH_JUNCTION_PROK_BAD_4MERS:
+                base -= 0.4
+        # Host-specific nudges remain precise where we have data
+        if h == "ecoli":
+            if (codon1, codon2) in (("GAA", "GAA"), ("CTG", "CTG")):
+                base += 0.5
+
+        return base
+
+    def sorted_synonyms_by_host(aa: str):
+        syns = AA_TO_CODONS.get(aa, [])
+        return sorted(syns, key=lambda c: (-codon_table.get(c, 0.0), c))  # stable: by score desc, then lexicographic
+
+    def would_create_homopolymer(prefix: str, candidate: str, threshold: int = CH_HOMOPOLYMER_THRESHOLD) -> bool:
+        s = prefix + candidate
+        if not s:
+            return False
+        tail = s[-1]
+        run = 0
+        for ch in reversed(s):
+            if ch == tail:
+                run += 1
+                if run >= threshold:
+                    return True
+            else:
+                break
+        return False
+
+    def is_alt_dinuc_run(prefix: str, candidate: str, repeats: int = CH_ALT_DINUC_REPEATS) -> bool:
+        s = prefix + candidate
+        if len(s) < 2 * repeats:
+            return False
+        tail = s[-2 * repeats:]
+        kmer = tail[:2]
+        return kmer * repeats == tail and kmer[0] != kmer[1]
+
+    n_codons = len(sequence) // 3
+    ramp_len = max(ramp_min, min(ramp_max, n_codons // max(1, ramp_scale_div) + ramp_offset))
+
     optimized = []
+
     for i in range(0, len(sequence), 3):
-        
-        # remove
-        # Check for terminal codons
-        #if _handle_terminal_codons(sequence, codon_table, optimized, i):
-        #    continue
-        
-        codon = sequence[i:i+3]
+        codon = sequence[i:i + 3]
         aa = GENETIC_CODE.get(codon, 'X')
-        mapped_codon = aa_codon_mapping.get((aa, codon), codon)
-        optimized.append(mapped_codon)
-    
+
+        # Preserve unknowns and stops verbatim
+        if aa == 'X' or aa == '*':
+            optimized.append(codon)
+            continue
+
+        syns = sorted_synonyms_by_host(aa)
+        if not syns:
+            optimized.append(codon)
+            continue
+
+        pos = i // 3
+        if pos < ramp_len and len(syns) > 1:
+            worst = len(syns) - 1
+            late = 1 if len(syns) > 1 else 0
+            t = pos / max(1, ramp_len - 1)
+            target_rank = int(round(worst * (1 - t) + late * t))
+        else:
+            target_rank = 0
+
+        # Build and score candidates around target rank (±search_window), with pair awareness
+        search = min(search_window, len(syns))
+        prefix = ''.join(optimized)
+        prefer_at_wobble = pos < min(wobble_early_len, ramp_len)
+        candidates = []
+
+        for r in range(max(0, target_rank - search), min(len(syns), target_rank + search + 1)):
+            cand = syns[r]
+
+            # Early wobble bias: prefer A/T wobble for first ~12 codons of the ramp
+            wobble_term = 0.0
+            if prefer_at_wobble:
+                wobble_term = (wobble_bonus if cand[2] in 'AT' else -wobble_penalty)
+
+            # Skip if it immediately creates obvious pathologies
+            if would_create_homopolymer(prefix, cand) or is_alt_dinuc_run(prefix, cand):
+                continue
+
+            # Score: closeness to target rank + pair score with previous codon
+            score = 0.0
+            score -= abs(r - target_rank) * rank_penalty
+            if optimized:
+                score += pair_weight * get_codon_pair_score(optimized[-1], cand)
+            score += wobble_term
+
+            candidates.append((score, cand))
+
+        # Pick best-scoring candidate or fall back to target rank
+        if candidates:
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            chosen = candidates[0][1]
+        else:
+            chosen = syns[target_rank]
+
+        optimized.append(chosen)
+
     return ''.join(optimized)
-'''
 
 
-def optimize_codons(sequence: str, host: str, method: str = 'simple') -> str:
+def optimize_codons(sequence: str, host: str, is_eukaryote: bool, method: str = 'simple') -> str:
     """
     Main entry point for codon optimization.
     
     Args:
         sequence: Input DNA sequence
         host: Host organism
+        is_eukaryote: Whether the selected host is eukaryotic
         method: Optimization method ('simple', 'percentile', 'charming')
     
     Returns:
@@ -295,13 +406,10 @@ def optimize_codons(sequence: str, host: str, method: str = 'simple') -> str:
         optimized = simple_best_codon_optimization(sequence, host)
     elif 'percentile' in method_lower:
         optimized = percentile_matching_optimization(sequence, host)
+    elif 'charming' in method_lower:
+        optimized = charming_optimization(sequence, host, is_eukaryote)
     else:
         raise ValueError(f"Unknown optimization method: {method}")
-
-    '''
-    elif 'distribution' in method_lower:
-        optimized = distribution_matching_optimization(sequence, host)
-    '''
     
     # Verify protein is preserved
     optimized_protein = translate_dna_to_protein(optimized)
