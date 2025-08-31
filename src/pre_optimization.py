@@ -84,7 +84,7 @@ def percentile_matching_optimization(sequence: str, host: str) -> str:
     for i in range(0, len(sequence), 3):
         codon = sequence[i:i+3]
         aa = GENETIC_CODE.get(codon, 'X')
-        if aa != 'X' and aa != '*':  # Skip stop codons
+        if aa != 'X' and aa != '*':
             aa_codon_counts[aa][codon] += 1
             codon_positions[codon].append(i)
     
@@ -95,7 +95,7 @@ def percentile_matching_optimization(sequence: str, host: str) -> str:
         # Sort CDS codons by frequency with consistent tiebreaking
         cds_codons_sorted = sorted(
             codon_counts.items(),
-            key=lambda x: (-x[1], min(codon_positions[x[0]]))  # Count desc, then first position
+            key = lambda x: (-x[1], min(codon_positions[x[0]]))  # Count desc, then first position
         )
         
         # Calculate percentiles for CDS codons
@@ -120,7 +120,7 @@ def percentile_matching_optimization(sequence: str, host: str) -> str:
             continue
         
         # Sort host codons by frequency with consistent tiebreaking
-        host_codon_freqs.sort(key=lambda x: (-x[1], x[0]))  # Freq desc, then alphabetical
+        host_codon_freqs.sort(key = lambda x: (-x[1], x[0]))  # Freq desc, then alphabetical
         
         # Calculate percentiles for host codons
         total_freq = sum(f for _, f in host_codon_freqs)
@@ -143,7 +143,7 @@ def percentile_matching_optimization(sequence: str, host: str) -> str:
                 # Find host codon with nearest percentile
                 best_host = min(
                     host_percentiles,
-                    key=lambda x: abs(x[1] - cds_percentile)
+                    key = lambda x: abs(x[1] - cds_percentile)
                 )
                 aa_codon_mapping[(aa, cds_codon)] = best_host[0]
     
@@ -158,6 +158,7 @@ def percentile_matching_optimization(sequence: str, host: str) -> str:
     return ''.join(optimized)
 
 
+# TODO make charming
 '''
 ######## PROBABLY REPLACE BY CHARMING
 def distribution_matching_optimization(sequence: str, host: str) -> str:

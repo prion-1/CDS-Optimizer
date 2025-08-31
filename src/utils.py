@@ -335,9 +335,12 @@ def calculate_accessibility_score(sequence: str, start_region_size: int = 30) ->
     return max(0.0, min(1.0, accessibility))
 
 
-def count_repetitive_sequences(sequence: str, homopolymer_threshold: int = 5,
-                              dinuc_threshold: int = 6,
-                              per_bp_scale: int = 1000) -> float:
+def count_repetitive_sequences(
+        sequence: str,
+        homopolymer_threshold: int = 5,
+        dinuc_threshold: int = 6,
+        per_bp_scale: int = 1000
+) -> float:
     """
     Count repetitive sequences with smooth penalty.
     
