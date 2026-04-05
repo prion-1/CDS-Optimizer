@@ -7,7 +7,14 @@
 !/data/codon_tables/*
 
 !main.ipynb
+
 !/src/
 !/src/utils.py
 !/src/pre_optimization.py
+!/src/optimization.py
+!/src/complexity_analysis.py
+!/src/gceh_module.py
 
+!README.md
+!requirements.txt
+!structure.md

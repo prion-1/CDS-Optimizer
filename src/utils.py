@@ -85,11 +85,10 @@ HOST_TARGET_GC = {
     'scerevisiae': 39.8,
     'spombe': 39.8
 }
-# Future work: load dynamically from CSV in data/
 
 # Valid host organisms
-VALID_HOSTS = {'hsapiens', 'mmusculus', 'ecoli', 'scerevisiae', 'spombe'}
-# Future work: load dynamically from CSV
+VALID_HOSTS = set(HOST_TARGET_GC.keys())
+#TODO Future work: load dynamically from CSV <-> but host target gc?
 
 
 def load_codon_table(host: str) -> Dict[str, float]:
@@ -337,7 +336,7 @@ def calculate_accessibility_score(sequence: str, start_region_size: int = 30) ->
 
 def count_repetitive_sequences(
         sequence: str,
-        homopolymer_threshold: int = 5,
+        homopolymer_threshold: int = 4,
         dinuc_threshold: int = 6,
         per_bp_scale: int = 1000
 ) -> float:

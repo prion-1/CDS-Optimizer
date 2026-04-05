@@ -24,7 +24,7 @@ FR_RAMP_MAX = 30
 FR_RAMP_SCALE_DIV = 4          # ~ first 25% + offset
 FR_RAMP_OFFSET = 6
 
-FR_HOMOPOLYMER_THRESHOLD = 5   # e.g., AAAAA
+FR_HOMOPOLYMER_THRESHOLD = 4   # e.g., AAAA
 FR_ALT_DINUC_REPEATS = 3       # e.g., ATATAT/CGCGCG
 
 # FlowRamp: junction 4-mer heuristics (last two of c1 + first two of c2)
@@ -95,20 +95,91 @@ def simple_best_codon_optimization(sequence: str, host: str) -> str:
     return ''.join(optimized)
 
 
-def percentile_matching_optimization(sequence: str, host: str) -> str:
+def percentile_matching_optimization(sequence: str, host: str, source_host: Optional[str] = None) -> str:
     """
-    Optimize codons while preserving usage pattern using percentile matching. This is a simple, balanced harmonization.
-    Maintain pausing patterns/translational rhythm.
-    
+    Optimize codons while preserving usage pattern using percentile matching.
+
+    Two modes:
+    - Source-agnostic (source_host=None): ranks codons by their frequency within the
+      input CDS and maps those ranks to the target host. Works well for naturally
+      expressed genes where CDS-internal codon counts correlate with organism-wide usage.
+    - Source host-informed (source_host set): ranks codons by their frequency in the
+      source organism's codon table and maps those ranks to the target host. Produces
+      more reliable results for short genes, synthetic constructs, or inputs whose
+      internal codon distribution does not reflect the source organism's preferences.
+
     Args:
         sequence: Input DNA sequence
-        host: Host organism
-    
+        host: Target host organism
+        source_host: Source host organism (optional; enables source-informed mode)
+
     Returns:
         Optimized DNA sequence preserving usage patterns
     """
     codon_table = load_codon_table(host)
-    
+
+    # --- Source host-informed percentile matching ---
+    if source_host is not None:
+        source_table = load_codon_table(source_host)
+
+        codon_mapping = {}
+        for aa in AA_TO_CODONS:
+            if aa == '*':
+                continue
+            codons = AA_TO_CODONS[aa]
+            if len(codons) == 1:
+                codon_mapping[codons[0]] = codons[0]
+                continue
+
+            # Source host: sort by frequency desc, assign midpoint percentiles
+            source_freqs = sorted(
+                [(c, source_table.get(c, 0.0)) for c in codons],
+                key = lambda x: (-x[1], x[0])
+            )
+            total_source = sum(f for _, f in source_freqs)
+
+            source_percentiles = {}
+            if total_source > 0:
+                cumulative = 0.0
+                for c, f in source_freqs:
+                    source_percentiles[c] = (cumulative + f / 2) / total_source
+                    cumulative += f
+            else:
+                for i, (c, _) in enumerate(source_freqs):
+                    source_percentiles[c] = (i + 0.5) / len(source_freqs)
+
+            # Target host: sort by frequency desc, assign midpoint percentiles
+            target_freqs = sorted(
+                [(c, codon_table.get(c, 0.0)) for c in codons],
+                key = lambda x: (-x[1], x[0])
+            )
+            total_target = sum(f for _, f in target_freqs)
+
+            target_percentiles = []
+            if total_target > 0:
+                cumulative = 0.0
+                for c, f in target_freqs:
+                    target_percentiles.append((c, (cumulative + f / 2) / total_target))
+                    cumulative += f
+            else:
+                for i, (c, _) in enumerate(target_freqs):
+                    target_percentiles.append((c, (i + 0.5) / len(target_freqs)))
+
+            # Map each source codon to the target codon with nearest percentile
+            for src_codon in codons:
+                src_pct = source_percentiles[src_codon]
+                best_target = min(target_percentiles, key = lambda x: abs(x[1] - src_pct))
+                codon_mapping[src_codon] = best_target[0]
+
+        # Apply mapping position by position
+        optimized = []
+        for i in range(0, len(sequence), 3):
+            codon = sequence[i:i+3]
+            optimized.append(codon_mapping.get(codon, codon))
+        return ''.join(optimized)
+
+    # --- Source-agnostic percentile matching (CDS-internal ranking) ---
+
     # Analyze codon usage in original sequence
     aa_codon_counts = defaultdict(lambda: defaultdict(int))
     codon_positions = defaultdict(list)  # Track positions for each codon
@@ -384,7 +455,7 @@ def flowramp_optimization(
     return ''.join(optimized)
 
 
-def optimize_codons(sequence: str, host: str, is_eukaryote: bool, method: str = 'simple') -> str:
+def optimize_codons(sequence: str, host: str, is_eukaryote: bool, method: str = 'simple', source_host: Optional[str] = None) -> str:
     """
     Main entry point for codon optimization.
     
@@ -405,7 +476,7 @@ def optimize_codons(sequence: str, host: str, is_eukaryote: bool, method: str = 
     if 'simple' in method_lower:
         optimized = simple_best_codon_optimization(sequence, host)
     elif 'percentile' in method_lower:
-        optimized = percentile_matching_optimization(sequence, host)
+        optimized = percentile_matching_optimization(sequence, host, source_host = source_host)
     elif 'flowramp' in method_lower:
         optimized = flowramp_optimization(sequence, host, is_eukaryote)
     else:
