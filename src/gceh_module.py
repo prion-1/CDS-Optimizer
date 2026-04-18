@@ -223,7 +223,7 @@ def analyze_sequence(
     valid_chars = set("ACGT")
     if not set(input_seq).issubset(valid_chars):
         invalid_found = set(input_seq) - valid_chars
-        print(f"   Invalid characters found: {', '.join(sorted(list(invalid_found)))}")
+        print(f'   Invalid characters found: {", ".join(sorted(list(invalid_found)))}')
         raise ValueError('illegal')
 
     lengthmod = len(input_seq) % 3
@@ -239,7 +239,7 @@ def analyze_sequence(
     while i < len(clean_seq):
         codon = clean_seq[i:i+3]
         if codon in STOP_CODONS:
-            print(f"WARNING: Stop codon '{codon}' found at base {i+1}/{len(clean_seq)}. Sequence will be truncated.")
+            print(f'WARNING: Stop codon "{codon}" found at base {i+1}/{len(clean_seq)}. Sequence will be truncated.')
             clean_seq = clean_seq[:i]
             stop_flag = True
             break

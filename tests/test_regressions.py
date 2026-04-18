@@ -340,6 +340,9 @@ def test_main_notebook_code_cells_compile_and_keep_host_aware_backtranslation():
 
     joined = '\n'.join(code_text)
     assert "warnings.filterwarnings('ignore')" not in joined
+    assert "{', '.join" not in joined
+    assert 'f\'Invalid amino acids: {", ".join(invalid_chars)}\'' in joined
+    assert 'f\'Invalid nucleotides: {", ".join(invalid_chars)}\'' in joined
     assert "back_translate_protein(clean_protein, host_dropdown.value)" in joined
     assert "PREOPTIMIZATION: Optimization complete" in joined
     assert "if pipeline != 'preoptimization_only':" in joined

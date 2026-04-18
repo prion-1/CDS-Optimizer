@@ -28,6 +28,8 @@ Dropping a new `<host>.csv` file into `data/codon_tables/` makes the host availa
 
 #TODO do this dynamically in the future; update codon table format
 
+[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/prion-1/CDS-Optimizer/main?urlpath=%2Fdoc%2Ftree%2Fmain.ipynb)
+
 ## Pipelines
 
 The notebook exposes three pipelines:

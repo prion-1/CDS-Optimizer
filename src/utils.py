@@ -200,7 +200,7 @@ def load_codon_table(host: str) -> Dict[str, float]:
     available = list_available_hosts()
     if host_lower not in available:
         raise ValueError(
-            f"Invalid host {host!r}. Available hosts: {', '.join(available) or '(none)'}"
+            f'Invalid host {host!r}. Available hosts: {", ".join(available) or "(none)"}'
         )
 
     filepath = os.path.join(CODON_TABLE_DIR, f'{host_lower}.csv')
@@ -228,7 +228,7 @@ def load_codon_frequencies(host: str) -> Dict[str, float]:
     available = list_available_hosts()
     if host_lower not in available:
         raise ValueError(
-            f"Invalid host {host!r}. Available hosts: {', '.join(available) or '(none)'}"
+            f'Invalid host {host!r}. Available hosts: {", ".join(available) or "(none)"}'
         )
     filepath = os.path.join(CODON_TABLE_DIR, f'{host_lower}.csv')
     df = pd.read_csv(filepath)
@@ -453,7 +453,7 @@ def load_tai_weights(host: str) -> Dict[str, float]:
     if missing:
         raise ValueError(
             f"Invalid tAI weights for {host_lower!r}: missing sense codons "
-            f"{', '.join(missing)}"
+            f'{", ".join(missing)}'
         )
 
     invalid = [
@@ -463,7 +463,7 @@ def load_tai_weights(host: str) -> Dict[str, float]:
     if invalid:
         raise ValueError(
             f"Invalid tAI weights for {host_lower!r}: weights must be finite "
-            f"and in (0, 1] for every sense codon. Invalid codons: {', '.join(sorted(invalid))}"
+            f'and in (0, 1] for every sense codon. Invalid codons: {", ".join(sorted(invalid))}'
         )
 
     return {codon: weights[codon] for codon in SENSE_CODONS}
