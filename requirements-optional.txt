@@ -1,0 +1,4 @@
+# Optional accelerators and scientific scoring backends.
+# The core code has fallbacks when these are absent.
+numba>=0.56.0
+ViennaRNA>=2.5.0
