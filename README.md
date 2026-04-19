@@ -107,6 +107,14 @@ Protein identity is enforced, and the literal input start codon is preserved acr
 
 `src/local_repair.py` scans overlapping windows and applies synonymous substitutions only where a local problem is detected. It looks for homopolymers, dinucleotide repeats, unwanted motifs, cryptic splice sites, and local GC drift. It is intentionally conservative: each candidate change is penalized for deviating from the preoptimization codon choice, the start codon is preserved verbatim, and the final sequence is checked for protein identity.
 
+The current default local-repair setting is `window_nt=60` and
+`max_subs_per_window=3`, based on heuristic parameter sweeps across repair
+windows, substitution limits, and downstream sequence-quality metrics. Optional
+hybrid GA polish is best treated as a multi-seed search:
+`src.hybrid_pipeline.multi_seed_ga_polish()` runs the same repaired sequence
+through several GA seeds, computes local repeat/complexity quality metrics, and
+selects the best seed by those quality criteria rather than by GA fitness alone.
+
 ## Analysis Layer
 
 `src/gceh_module.py`, `src/complexity_analysis.py`, and analysis helpers in `src/utils.py` provide:
@@ -181,8 +189,8 @@ The notebook is the easiest entry point, but the same pipeline pieces can be cal
 
 ```python
 from src.pre_optimization import optimize_codons
-from src.optimization import genetic_algorithm
 from src.local_repair import local_repair
+from src.hybrid_pipeline import multi_seed_ga_polish
 from src.utils import get_target_gc, is_eukaryote_host
 
 input_cds = "ATGGCTGACTAA"
@@ -190,22 +198,20 @@ host = "ecoli"
 is_eukaryote = is_eukaryote_host(host)
 
 preoptimized = optimize_codons(input_cds, host, is_eukaryote, method="percentile")
-optimized, fitness, metrics = genetic_algorithm(
-    preoptimized,
-    host=host,
-    is_eukaryote=is_eukaryote,
-    target_gc=get_target_gc(host),
-    pop_size=40,
-    generations=50,
-    verbose=False,
-)
 repaired, changelog = local_repair(
-    optimized,
+    preoptimized,
     host,
     is_eukaryote,
     preoptimization_sequence=preoptimized,
     target_gc=get_target_gc(host),
 )
+polish_result = multi_seed_ga_polish(
+    repaired,
+    host=host,
+    is_eukaryote=is_eukaryote,
+    target_gc=get_target_gc(host),
+)
+optimized = polish_result.best_sequence
 ```
 
 ## Testing
@@ -226,6 +232,7 @@ pytest
 CDS Optimizer/
 ├── README.md
 ├── LICENSE
+├── .gitignore
 ├── main.ipynb
 ├── scripts/
 │   ├── fetch_cocoputs_codon_pair_tables.py
@@ -234,6 +241,7 @@ CDS Optimizer/
 │   ├── __init__.py
 │   ├── complexity_analysis.py
 │   ├── gceh_module.py
+│   ├── hybrid_pipeline.py
 │   ├── local_repair.py
 │   ├── optimization.py
 │   ├── pre_optimization.py

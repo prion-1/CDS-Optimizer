@@ -90,8 +90,8 @@ def local_repair(
     is_eukaryote: bool,
     preoptimization_sequence: str,
     target_gc: Optional[float] = None,
-    window_nt: int = 42,
-    max_subs_per_window: int = 2,
+    window_nt: int = 60,
+    max_subs_per_window: int = 3,
     motifs: Optional[List[str]] = None,
     gc_tolerance: float = 5.0,
 ) -> Tuple[str, List[dict]]:

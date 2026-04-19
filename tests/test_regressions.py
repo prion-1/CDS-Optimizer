@@ -1,4 +1,5 @@
 import csv
+import inspect
 import json
 import math
 from pathlib import Path
@@ -11,6 +12,7 @@ from src.local_repair import local_repair
 from src.optimization import FitnessWeights, GeneticAlgorithm, fitness_function
 from src.pre_optimization import optimize_codons
 from src import utils
+from src import hybrid_pipeline
 
 
 def _weights_with(**overrides):
@@ -59,6 +61,69 @@ def test_preoptimization_and_local_repair_preserve_gtg_start_codon():
 
         assert preoptimized.startswith('GTG')
         assert repaired.startswith('GTG')
+
+
+def test_local_repair_api_defaults_match_hybrid_sweep_default():
+    signature = inspect.signature(local_repair)
+
+    assert signature.parameters['window_nt'].default == 60
+    assert signature.parameters['max_subs_per_window'].default == 3
+
+
+def test_multi_seed_ga_polish_selects_by_quality_not_fitness(monkeypatch):
+    bad_sequence = 'ATGGCTGCTGCTTAA'
+    clean_sequence = 'ATGGCCGCCGCCTAA'
+
+    def fake_genetic_algorithm(*, random_seed, **kwargs):
+        if random_seed == 1:
+            return bad_sequence, 10.0, {'fitness': 10.0}
+        return clean_sequence, 1.0, {'fitness': 1.0}
+
+    def fake_sequence_quality_metrics(sequence, **kwargs):
+        common = {
+            'protein_identity_ok': True,
+            'complexity_min': 0.45,
+            'cai': 0.71,
+            'tai': 0.32,
+        }
+        if sequence == clean_sequence:
+            return {
+                **common,
+                'repeat_mean': 0.10,
+                'repeat_max': 0.50,
+                'repeat_frac_bad': 0.00,
+                'longest_homopolymer': 4,
+                'homopolymer_runs_ge5': 0,
+                'complexity_mean': 0.57,
+            }
+        return {
+            **common,
+            'repeat_mean': 1.00,
+            'repeat_max': 2.00,
+            'repeat_frac_bad': 0.70,
+            'longest_homopolymer': 5,
+            'homopolymer_runs_ge5': 1,
+            'complexity_mean': 0.58,
+        }
+
+    monkeypatch.setattr(hybrid_pipeline, 'genetic_algorithm', fake_genetic_algorithm)
+    monkeypatch.setattr(hybrid_pipeline, 'sequence_quality_metrics', fake_sequence_quality_metrics)
+
+    result = hybrid_pipeline.multi_seed_ga_polish(
+        'ATGGCTGCTGCTTAA',
+        host='ecoli',
+        is_eukaryote=False,
+        seeds=(1, 2),
+    )
+
+    assert result.best_seed == 2
+    assert result.best_sequence == clean_sequence
+    assert len(result.runs) == 2
+
+
+def test_parse_seed_list_rejects_empty_input():
+    with pytest.raises(ValueError):
+        hybrid_pipeline.parse_seed_list(' , ')
 
 
 def test_ga_preserves_gtg_start_codon():
@@ -353,3 +418,7 @@ def test_main_notebook_code_cells_compile_and_keep_host_aware_backtranslation():
     assert "calculate_tai" in joined
     assert "Final codon-pair score:" in joined
     assert "Final tAI:" in joined
+    assert "value = 'structure'," in joined
+    assert "value = 'hybrid'," in joined
+    assert "on_pipeline_change({'new': pipeline_dropdown.value})" in joined
+    assert "on_codon_method_change({'new': codon_method_dropdown.value})" in joined
