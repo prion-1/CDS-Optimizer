@@ -66,8 +66,16 @@ def test_preoptimization_and_local_repair_preserve_gtg_start_codon():
 def test_local_repair_api_defaults_match_hybrid_sweep_default():
     signature = inspect.signature(local_repair)
 
-    assert signature.parameters['window_nt'].default == 60
-    assert signature.parameters['max_subs_per_window'].default == 3
+    assert (
+        signature.parameters['window_nt'].default
+        == hybrid_pipeline.DEFAULT_HYBRID_REPAIR_WINDOW_NT
+        == 36
+    )
+    assert (
+        signature.parameters['max_subs_per_window'].default
+        == hybrid_pipeline.DEFAULT_HYBRID_REPAIR_MAX_SUBS
+        == 3
+    )
 
 
 def test_multi_seed_ga_polish_selects_by_quality_not_fitness(monkeypatch):
@@ -89,6 +97,11 @@ def test_multi_seed_ga_polish_selects_by_quality_not_fitness(monkeypatch):
         if sequence == clean_sequence:
             return {
                 **common,
+                'degeneracy_score': 0.50,
+                'strict_degenerate_example_count': 0,
+                'longest_gc_only_run': 6,
+                'max_dinuc_tandem_bases': 0,
+                'max_trinuc_tandem_bases': 0,
                 'repeat_mean': 0.10,
                 'repeat_max': 0.50,
                 'repeat_frac_bad': 0.00,
@@ -98,6 +111,11 @@ def test_multi_seed_ga_polish_selects_by_quality_not_fitness(monkeypatch):
             }
         return {
             **common,
+            'degeneracy_score': 8.00,
+            'strict_degenerate_example_count': 1,
+            'longest_gc_only_run': 8,
+            'max_dinuc_tandem_bases': 0,
+            'max_trinuc_tandem_bases': 0,
             'repeat_mean': 1.00,
             'repeat_max': 2.00,
             'repeat_frac_bad': 0.70,
@@ -119,6 +137,55 @@ def test_multi_seed_ga_polish_selects_by_quality_not_fitness(monkeypatch):
     assert result.best_seed == 2
     assert result.best_sequence == clean_sequence
     assert len(result.runs) == 2
+
+
+def test_hybrid_candidate_rank_prefers_degeneracy_clean_sequence():
+    high_objective_with_gc_run = {
+        'protein_identity_ok': True,
+        'degeneracy_score': 2.0,
+        'strict_degenerate_example_count': 1,
+        'longest_gc_only_run': 8,
+        'max_dinuc_tandem_bases': 0,
+        'max_trinuc_tandem_bases': 0,
+        'repeat_mean': 0.10,
+        'repeat_max': 0.50,
+        'repeat_frac_bad': 0.00,
+        'longest_homopolymer': 4,
+        'homopolymer_runs_ge5': 0,
+        'complexity_mean': 0.60,
+        'complexity_min': 0.50,
+        'cai': 0.75,
+        'tai': 0.35,
+    }
+    lower_objective_clean = {
+        **high_objective_with_gc_run,
+        'degeneracy_score': 3.0,
+        'strict_degenerate_example_count': 0,
+        'longest_gc_only_run': 7,
+        'cai': 0.70,
+        'tai': 0.30,
+    }
+
+    assert hybrid_pipeline.is_degeneracy_clean_candidate(lower_objective_clean)
+    assert not hybrid_pipeline.is_degeneracy_clean_candidate(high_objective_with_gc_run)
+    assert hybrid_pipeline.hybrid_candidate_rank(
+        lower_objective_clean,
+        fitness=0.1,
+    ) > hybrid_pipeline.hybrid_candidate_rank(
+        high_objective_with_gc_run,
+        fitness=10.0,
+    )
+
+
+def test_sequence_quality_metrics_reports_strict_degeneracy_fields():
+    sequence = 'ATG' + 'GCGCCGCG' + 'GCT' * 5 + 'TAA'
+    metrics = hybrid_pipeline.sequence_quality_metrics(sequence, host='ecoli')
+
+    assert metrics['longest_gc_only_run'] >= 8
+    assert metrics['gc_runs_ge_threshold'] >= 1
+    assert metrics['strict_degenerate_example_count'] >= 1
+    assert metrics['degeneracy_score'] > 0
+    assert not hybrid_pipeline.is_degeneracy_clean_candidate(metrics)
 
 
 def test_parse_seed_list_rejects_empty_input():

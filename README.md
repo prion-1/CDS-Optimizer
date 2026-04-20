@@ -110,13 +110,16 @@ Protein identity is enforced, and the literal input start codon is preserved acr
 
 `src/local_repair.py` scans overlapping windows and applies synonymous substitutions only where a local problem is detected. It looks for homopolymers, dinucleotide repeats, unwanted motifs, cryptic splice sites, and local GC drift. It is intentionally conservative: each candidate change is penalized for deviating from the preoptimization codon choice, the start codon is preserved verbatim, and the final sequence is checked for protein identity.
 
-The current default local-repair setting is `window_nt=60` and
-`max_subs_per_window=3`, based on heuristic parameter sweeps across repair
-windows, substitution limits, and downstream sequence-quality metrics. Optional
-hybrid GA polish is best treated as a multi-seed search:
+The current default local-repair setting is `window_nt=36`,
+`max_subs_per_window=3`, and `gc_tolerance=5.0`, based on PINK1-focused
+parameter sweeps that favored shorter repair windows for removing GC-rich
+degenerate stretches while preserving CAI and host GC balance. Optional hybrid
+GA polish is treated as a multi-seed search:
 `src.hybrid_pipeline.multi_seed_ga_polish()` runs the same repaired sequence
-through several GA seeds, computes local repeat/complexity quality metrics, and
-selects the best seed by those quality criteria rather than by GA fitness alone.
+through the default seeds `(1701, 2701, 3701, 4701, 5701)`, computes
+degeneracy-aware repeat/complexity quality metrics, and selects the best seed
+by those quality criteria rather than by GA fitness alone. The default polish
+weights use the strongest repeat-guard profile from those sweeps.
 
 ## Analysis Layer
 
