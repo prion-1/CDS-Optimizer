@@ -19,9 +19,20 @@ share state. Local repair benefits from the same caches without extra wiring.
 
 import random
 from dataclasses import dataclass
-from typing import List, Tuple, Dict, Optional, Callable
+from typing import Any, List, Tuple, Dict, Optional, Callable
 import numpy as np
 
+from .degeneracy import (
+    DEFAULT_GA_REPEAT_PENALTY_MODE,
+    DEFAULT_GA_REPEAT_PENALTY_SCALE,
+    DEFAULT_GA_STRICT_DEGENERACY_WEIGHT,
+    GA_REPEAT_PENALTY_MODE_LEGACY,
+    calculate_ga_repeat_score,
+    calculate_strict_degeneracy_component,
+    compute_degeneracy_metrics,
+    normalize_ga_repeat_penalty,
+    normalize_ga_repeat_penalty_mode,
+)
 from .utils import (
     load_codon_table,
     calculate_cai,
@@ -32,6 +43,7 @@ from .utils import (
     calculate_folding_energy_windowed,
     calculate_accessibility_score,
     repeat_penalty_windowed,
+    repeat_penalty_window_params,
     count_cryptic_splice_sites,
     check_internal_start_codons,
     translate_dna_to_protein,
@@ -103,7 +115,10 @@ def fitness_function(
     cai_score_vector: Optional[np.ndarray] = None,
     cps_matrix: Optional[np.ndarray] = None,
     tai_score_vector: Optional[np.ndarray] = None,
-) -> Tuple[float, Dict[str, float]]:
+    repeat_penalty_mode: str = DEFAULT_GA_REPEAT_PENALTY_MODE,
+    strict_degeneracy_weight: float = DEFAULT_GA_STRICT_DEGENERACY_WEIGHT,
+    repeat_penalty_scale: float = DEFAULT_GA_REPEAT_PENALTY_SCALE,
+) -> Tuple[float, Dict[str, Any]]:
     """
     Compute the multi-objective fitness score for a sequence.
 
@@ -124,7 +139,8 @@ def fitness_function(
     if cai_score_vector is None:
         cai_score_vector = get_codon_score_vector(host)
 
-    metrics: Dict[str, float] = {}
+    normalized_repeat_mode = normalize_ga_repeat_penalty_mode(repeat_penalty_mode)
+    metrics: Dict[str, Any] = {}
 
     codon_indices = _seq_to_codon_indices(sequence)
 
@@ -158,12 +174,51 @@ def fitness_function(
     metrics['motif_penalty'] = min(motif_count / 10.0, 1.0)
 
     # 7. Repetitive sequences
-    mean_pen, max_pen, frac_bad = repeat_penalty_windowed(sequence)
-    repeat_score = 0.6 * mean_pen + 0.4 * max_pen
-    if frac_bad > 0.3:
-        repeat_score *= 1.1
+    if normalized_repeat_mode == GA_REPEAT_PENALTY_MODE_LEGACY:
+        mean_pen, max_pen, frac_bad = repeat_penalty_windowed(sequence)
+        repeat_window, repeat_step = repeat_penalty_window_params(len(sequence))
+        repeat_metrics: Dict[str, Any] = {
+            'repeat_mean': mean_pen,
+            'repeat_max': max_pen,
+            'repeat_frac_bad': frac_bad,
+            'repeat_window_nt': repeat_window,
+            'repeat_step_nt': repeat_step,
+        }
+    else:
+        repeat_metrics = compute_degeneracy_metrics(sequence)
+        numeric_repeat_metrics = {
+            key: value
+            for key, value in repeat_metrics.items()
+            if isinstance(value, (int, float))
+        }
+        metrics.update(numeric_repeat_metrics)
+
+    metrics.update({
+        'repeat_mean': repeat_metrics['repeat_mean'],
+        'repeat_max': repeat_metrics['repeat_max'],
+        'repeat_frac_bad': repeat_metrics['repeat_frac_bad'],
+        'repeat_window_nt': repeat_metrics['repeat_window_nt'],
+        'repeat_step_nt': repeat_metrics['repeat_step_nt'],
+    })
+    repeat_score = calculate_ga_repeat_score(
+        repeat_metrics,
+        mode=normalized_repeat_mode,
+        strict_degeneracy_weight=strict_degeneracy_weight,
+    )
+    metrics['legacy_repeat_score'] = calculate_ga_repeat_score(
+        repeat_metrics,
+        mode=GA_REPEAT_PENALTY_MODE_LEGACY,
+    )
+    metrics['strict_degeneracy_component'] = calculate_strict_degeneracy_component(
+        repeat_metrics
+    )
     metrics['repetitive_sequences'] = repeat_score
-    metrics['repeat_penalty'] = min(repeat_score / 20.0, 1.0)
+    metrics['repeat_penalty'] = normalize_ga_repeat_penalty(
+        repeat_score,
+        repeat_penalty_scale=repeat_penalty_scale,
+    )
+    metrics['repeat_penalty_scale'] = repeat_penalty_scale
+    metrics['strict_degeneracy_weight'] = strict_degeneracy_weight
 
     # 8. Cryptic splice sites
     splice_count = count_cryptic_splice_sites(sequence, is_eukaryote)
@@ -259,6 +314,9 @@ class GeneticAlgorithm:
         avoid_motifs: Optional[List[str]] = None,
         random_seed: Optional[int] = None,
         progress_callback: Optional[Callable] = None,
+        repeat_penalty_mode: str = DEFAULT_GA_REPEAT_PENALTY_MODE,
+        strict_degeneracy_weight: float = DEFAULT_GA_STRICT_DEGENERACY_WEIGHT,
+        repeat_penalty_scale: float = DEFAULT_GA_REPEAT_PENALTY_SCALE,
     ):
         self.initial_sequence = initial_sequence.upper()
         self.start_codon = self.initial_sequence[:3]
@@ -274,6 +332,9 @@ class GeneticAlgorithm:
         self.weights = weights or FitnessWeights()
         self.avoid_motifs = avoid_motifs or []
         self.progress_callback = progress_callback
+        self.repeat_penalty_mode = normalize_ga_repeat_penalty_mode(repeat_penalty_mode)
+        self.strict_degeneracy_weight = strict_degeneracy_weight
+        self.repeat_penalty_scale = repeat_penalty_scale
 
         if random_seed is not None:
             random.seed(random_seed)
@@ -304,7 +365,7 @@ class GeneticAlgorithm:
         self.fitness_history: List[float] = []
         self.best_sequence: Optional[str] = None
         self.best_fitness: float = float('-inf')
-        self.best_metrics: Optional[Dict[str, float]] = None
+        self.best_metrics: Optional[Dict[str, Any]] = None
 
     # ----- population management -----------------------------------------
 
@@ -343,7 +404,7 @@ class GeneticAlgorithm:
 
     # ----- evaluation ----------------------------------------------------
 
-    def evaluate_population(self) -> List[Tuple[str, float, Dict]]:
+    def evaluate_population(self) -> List[Tuple[str, float, Dict[str, Any]]]:
         evaluated = []
         for seq in self.population:
             fitness, metrics = fitness_function(
@@ -357,6 +418,9 @@ class GeneticAlgorithm:
                 cai_score_vector=self.cai_score_vector,
                 cps_matrix=self.cps_matrix,
                 tai_score_vector=self.tai_score_vector,
+                repeat_penalty_mode=self.repeat_penalty_mode,
+                strict_degeneracy_weight=self.strict_degeneracy_weight,
+                repeat_penalty_scale=self.repeat_penalty_scale,
             )
             evaluated.append((seq, fitness, metrics))
         evaluated.sort(key=lambda x: x[1], reverse=True)
@@ -364,7 +428,10 @@ class GeneticAlgorithm:
 
     # ----- variation operators -------------------------------------------
 
-    def tournament_selection(self, evaluated: List[Tuple[str, float, Dict]]) -> str:
+    def tournament_selection(
+        self,
+        evaluated: List[Tuple[str, float, Dict[str, Any]]],
+    ) -> str:
         tournament = random.sample(evaluated, min(self.tournament_size, len(evaluated)))
         return max(tournament, key=lambda x: x[1])[0]
 
@@ -427,7 +494,7 @@ class GeneticAlgorithm:
 
     # ----- main loop -----------------------------------------------------
 
-    def run(self, verbose: bool = True) -> Tuple[str, float, Dict]:
+    def run(self, verbose: bool = True) -> Tuple[str, float, Dict[str, Any]]:
         self.initialize_population()
 
         for generation in range(self.generations):
@@ -504,7 +571,10 @@ def genetic_algorithm(
     random_seed: Optional[int] = None,
     verbose: bool = True,
     progress_callback: Optional[Callable] = None,
-) -> Tuple[str, float, Dict]:
+    repeat_penalty_mode: str = DEFAULT_GA_REPEAT_PENALTY_MODE,
+    strict_degeneracy_weight: float = DEFAULT_GA_STRICT_DEGENERACY_WEIGHT,
+    repeat_penalty_scale: float = DEFAULT_GA_REPEAT_PENALTY_SCALE,
+) -> Tuple[str, float, Dict[str, Any]]:
     """
     Convenience wrapper that constructs a GeneticAlgorithm with weights
     parsed from a plain dict.
@@ -527,5 +597,8 @@ def genetic_algorithm(
         avoid_motifs=avoid_motifs,
         random_seed=random_seed,
         progress_callback=progress_callback,
+        repeat_penalty_mode=repeat_penalty_mode,
+        strict_degeneracy_weight=strict_degeneracy_weight,
+        repeat_penalty_scale=repeat_penalty_scale,
     )
     return ga.run(verbose=verbose)

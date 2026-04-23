@@ -12,11 +12,13 @@
 !src/
 !src/__init__.py
 !src/complexity_analysis.py
+!src/degeneracy.py
 !src/gceh_module.py
 !src/hybrid_pipeline.py
 !src/local_repair.py
 !src/optimization.py
 !src/pre_optimization.py
+!src/presets.py
 !src/utils.py
 
 !data/

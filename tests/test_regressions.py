@@ -11,6 +11,8 @@ from src.complexity_analysis import compute_complexity_track
 from src.local_repair import local_repair
 from src.optimization import FitnessWeights, GeneticAlgorithm, fitness_function
 from src.pre_optimization import optimize_codons
+from src import degeneracy
+from src import presets
 from src import utils
 from src import hybrid_pipeline
 
@@ -78,6 +80,241 @@ def test_local_repair_api_defaults_match_hybrid_sweep_default():
     )
 
 
+def test_default_polish_weights_keep_sweep_derived_envelope():
+    assert hybrid_pipeline.DEFAULT_POLISH_POP_SIZE == 20
+    assert hybrid_pipeline.DEFAULT_POLISH_GENERATIONS == 8
+    assert hybrid_pipeline.DEFAULT_POLISH_MUTATION_RATE == pytest.approx(0.008)
+    assert hybrid_pipeline.DEFAULT_POLISH_SEEDS == (1701, 2701, 3701, 4701, 5701)
+    assert hybrid_pipeline.DEFAULT_POLISH_WEIGHTS is (
+        hybrid_pipeline.EXTREME_REPEAT_GUARD_POLISH_WEIGHTS
+    )
+    assert hybrid_pipeline.DEFAULT_POLISH_WEIGHTS['repeats'] == pytest.approx(0.42)
+    assert hybrid_pipeline.DEFAULT_POLISH_WEIGHTS['cai'] == pytest.approx(0.18)
+
+
+def test_named_optimization_presets_are_normalized_and_exported():
+    preset_rows = presets.list_optimization_presets()
+    names = [preset.name for preset in preset_rows]
+
+    assert names == [
+        presets.PRESET_REPEAT_GUARD,
+        presets.PRESET_EXPRESSION_CONSERVATIVE,
+        presets.PRESET_SECONDARY_STRUCTURE,
+        presets.PRESET_SECONDARY_ACCESSIBILITY,
+        presets.PRESET_REGULATORY_MOTIF_HIGH,
+        presets.PRESET_REGULATORY_CONSTRUCT_SAFE,
+    ]
+    for preset in preset_rows:
+        assert set(preset.weights) == set(presets.FITNESS_WEIGHT_KEYS)
+        assert sum(preset.weights.values()) == pytest.approx(1.0)
+        assert presets.get_optimization_preset(preset.name) is preset
+
+    assert (
+        presets.get_optimization_preset(presets.PRESET_REPEAT_GUARD).weights['repeats']
+        == pytest.approx(0.42)
+    )
+    assert (
+        presets.get_optimization_preset(
+            presets.PRESET_EXPRESSION_CONSERVATIVE
+        ).weights['cai']
+        == pytest.approx(0.30)
+    )
+    assert (
+        presets.get_optimization_preset(
+            presets.PRESET_SECONDARY_STRUCTURE
+        ).weights['folding_energy']
+        == pytest.approx(0.34)
+    )
+    assert (
+        presets.get_optimization_preset(
+            presets.PRESET_REGULATORY_CONSTRUCT_SAFE
+        ).selector
+        == presets.PRESET_SELECTOR_REGULATORY
+    )
+
+
+def test_unknown_optimization_preset_is_rejected():
+    with pytest.raises(ValueError, match='Unknown optimization preset'):
+        presets.get_optimization_preset('not-a-preset')
+
+
+def test_preset_helpers_filter_roundtrip_and_host_adapt(monkeypatch):
+    generic_names = [
+        preset.name
+        for preset in presets.list_optimization_presets(
+            selector=presets.PRESET_SELECTOR_GENERIC
+        )
+    ]
+    regulatory_names = [
+        preset.name
+        for preset in presets.list_optimization_presets(
+            selector=presets.PRESET_SELECTOR_REGULATORY
+        )
+    ]
+
+    assert presets.DEFAULT_OPTIMIZATION_PRESET == presets.PRESET_REPEAT_GUARD
+    assert generic_names == [
+        presets.PRESET_REPEAT_GUARD,
+        presets.PRESET_EXPRESSION_CONSERVATIVE,
+        presets.PRESET_SECONDARY_STRUCTURE,
+        presets.PRESET_SECONDARY_ACCESSIBILITY,
+    ]
+    assert regulatory_names == [
+        presets.PRESET_REGULATORY_MOTIF_HIGH,
+        presets.PRESET_REGULATORY_CONSTRUCT_SAFE,
+    ]
+
+    original = presets.get_optimization_preset(
+        presets.PRESET_EXPRESSION_CONSERVATIVE
+    ).weights
+    notebook_weights = presets.fitness_weights_to_notebook_weights(original)
+    roundtrip = presets.notebook_weights_to_fitness_weights(notebook_weights)
+
+    assert sum(notebook_weights.values()) == pytest.approx(1.0)
+    for notebook_key, fitness_key in presets.NOTEBOOK_WEIGHT_KEY_MAP.items():
+        assert roundtrip[fitness_key] == pytest.approx(notebook_weights[notebook_key])
+
+    for preset_name in (
+        presets.PRESET_SECONDARY_ACCESSIBILITY,
+        presets.PRESET_REGULATORY_MOTIF_HIGH,
+        presets.PRESET_REGULATORY_CONSTRUCT_SAFE,
+    ):
+        notebook_total = sum(
+            presets.fitness_weights_to_notebook_weights(
+                presets.get_optimization_preset(preset_name).weights
+            ).values()
+        )
+        assert notebook_total == pytest.approx(1.0)
+
+    monkeypatch.setattr(presets, 'tai_available_for', lambda host: False)
+    monkeypatch.setattr(presets, 'codon_pair_available_for', lambda host: False)
+    adapted = presets.preset_weights_for_host(
+        presets.PRESET_EXPRESSION_CONSERVATIVE,
+        'host_without_optional_tables',
+    )
+
+    assert adapted['tai'] == pytest.approx(0.0)
+    assert adapted['codon_pair_bias'] == pytest.approx(0.0)
+    assert sum(adapted.values()) == pytest.approx(1.0)
+    assert adapted['repeats'] > original['repeats']
+
+
+def test_repeat_penalty_window_params_scale_with_sequence_length():
+    assert utils.repeat_penalty_window_params(0) == (30, 15)
+    assert utils.repeat_penalty_window_params(100) == (30, 15)
+    assert utils.repeat_penalty_window_params(1999)[0] < 500
+    assert utils.repeat_penalty_window_params(2000) == (500, 250)
+    assert utils.repeat_penalty_window_params(5000) == (500, 250)
+
+    window, step = utils.repeat_penalty_window_params(1050)
+
+    assert 30 < window < 500
+    assert window % 10 == 0
+    assert step == window // 2
+
+
+def test_fitness_default_repeat_penalty_mode_is_legacy():
+    sequence = 'ATG' + 'GCGCCGCG' + 'GCT' * 5 + 'TAA'
+    weights = _weights_with(repeats=1.0)
+
+    default_fitness, default_metrics = fitness_function(
+        sequence=sequence,
+        host='ecoli',
+        is_eukaryote=False,
+        weights=weights,
+    )
+    legacy_fitness, legacy_metrics = fitness_function(
+        sequence=sequence,
+        host='ecoli',
+        is_eukaryote=False,
+        weights=weights,
+        repeat_penalty_mode=degeneracy.GA_REPEAT_PENALTY_MODE_LEGACY,
+    )
+    repeat_mean, repeat_max, repeat_frac_bad = utils.repeat_penalty_windowed(sequence)
+    expected_score = degeneracy.calculate_legacy_repeat_score({
+        'repeat_mean': repeat_mean,
+        'repeat_max': repeat_max,
+        'repeat_frac_bad': repeat_frac_bad,
+    })
+
+    assert default_metrics['repetitive_sequences'] == pytest.approx(expected_score)
+    assert default_metrics['repeat_penalty'] == pytest.approx(
+        degeneracy.normalize_ga_repeat_penalty(expected_score)
+    )
+    assert default_metrics['repetitive_sequences'] == pytest.approx(
+        legacy_metrics['repetitive_sequences']
+    )
+    assert default_fitness == pytest.approx(legacy_fitness)
+    assert 'degeneracy_score' not in default_metrics
+
+
+def test_fitness_repeat_penalty_modes_enable_degeneracy_alignment():
+    sequence = 'ATG' + 'GCGCCGCG' + 'GCT' * 5 + 'TAA'
+    weights = _weights_with(repeats=1.0)
+
+    legacy_fitness, legacy_metrics = fitness_function(
+        sequence=sequence,
+        host='ecoli',
+        is_eukaryote=False,
+        weights=weights,
+        repeat_penalty_mode='legacy',
+    )
+    blend_fitness, blend_metrics = fitness_function(
+        sequence=sequence,
+        host='ecoli',
+        is_eukaryote=False,
+        weights=weights,
+        repeat_penalty_mode='blend',
+    )
+    aligned_fitness, aligned_metrics = fitness_function(
+        sequence=sequence,
+        host='ecoli',
+        is_eukaryote=False,
+        weights=weights,
+        repeat_penalty_mode='aligned',
+    )
+
+    assert blend_metrics['strict_degeneracy_component'] > 0
+    assert blend_metrics['repeat_penalty'] > legacy_metrics['repeat_penalty']
+    assert blend_fitness < legacy_fitness
+    assert aligned_metrics['repetitive_sequences'] == pytest.approx(
+        aligned_metrics['degeneracy_score']
+    )
+    assert aligned_fitness < legacy_fitness
+
+
+def test_fitness_repeat_penalty_mode_validation():
+    sequence = 'ATGGCTGCCTAA'
+    weights = _weights_with(repeats=1.0)
+
+    with pytest.raises(ValueError, match='Invalid repeat_penalty_mode'):
+        fitness_function(
+            sequence=sequence,
+            host='ecoli',
+            is_eukaryote=False,
+            weights=weights,
+            repeat_penalty_mode='unknown',
+        )
+
+    with pytest.raises(ValueError, match='strict_degeneracy_weight'):
+        fitness_function(
+            sequence=sequence,
+            host='ecoli',
+            is_eukaryote=False,
+            weights=weights,
+            strict_degeneracy_weight=-1.0,
+        )
+
+    with pytest.raises(ValueError, match='repeat_penalty_scale'):
+        fitness_function(
+            sequence=sequence,
+            host='ecoli',
+            is_eukaryote=False,
+            weights=weights,
+            repeat_penalty_scale=0.0,
+        )
+
+
 def test_multi_seed_ga_polish_selects_by_quality_not_fitness(monkeypatch):
     bad_sequence = 'ATGGCTGCTGCTTAA'
     clean_sequence = 'ATGGCCGCCGCCTAA'
@@ -139,6 +376,197 @@ def test_multi_seed_ga_polish_selects_by_quality_not_fitness(monkeypatch):
     assert len(result.runs) == 2
 
 
+def test_multi_seed_regulatory_ga_polish_selects_raw_regulatory_cleanup(monkeypatch):
+    bad_sequence = 'ATGAATAAAGTAAGGTAA'
+    clean_sequence = 'ATGGCCGCCGCCGCCTAA'
+
+    def fake_genetic_algorithm(*, random_seed, **kwargs):
+        if random_seed == 1:
+            return bad_sequence, 100.0, {'fitness': 100.0}
+        return clean_sequence, 1.0, {'fitness': 1.0}
+
+    def fake_sequence_quality_metrics(sequence, **kwargs):
+        return {
+            'length_bp': len(sequence),
+            'protein_identity_ok': True,
+            'sequence_sha256': f'seed-{len(sequence)}',
+            'gc': 52.0,
+            'gc3': 50.0,
+            'cai': 0.75,
+            'tai': 0.32,
+            'degeneracy_score': 1.0,
+            'strict_degenerate_example_count': 0,
+            'longest_gc_only_run': 7,
+            'max_dinuc_tandem_bases': 0,
+            'max_trinuc_tandem_bases': 0,
+            'repeat_mean': 0.10,
+            'repeat_max': 0.50,
+            'repeat_frac_bad': 0.00,
+            'longest_homopolymer': 4,
+            'homopolymer_runs_ge5': 0,
+            'complexity_mean': 0.60,
+            'complexity_min': 0.58,
+        }
+
+    monkeypatch.setattr(hybrid_pipeline, 'genetic_algorithm', fake_genetic_algorithm)
+    monkeypatch.setattr(hybrid_pipeline, 'sequence_quality_metrics', fake_sequence_quality_metrics)
+
+    result = hybrid_pipeline.multi_seed_regulatory_ga_polish(
+        clean_sequence,
+        host='hsapiens',
+        is_eukaryote=True,
+        seeds=(1, 2),
+    )
+
+    assert result.best_seed == 2
+    assert result.best_sequence == clean_sequence
+    assert result.best_quality_metrics['regulatory_total_motifs'] == 0
+    assert result.best_quality_metrics['regulatory_splice_sites'] == 0
+    assert result.best_quality_metrics['regulatory_constructability_pass']
+
+    bad_run = next(run for run in result.runs if run.seed == 1)
+    assert bad_run.quality_metrics['regulatory_default_motifs'] == 1
+    assert bad_run.quality_metrics['regulatory_splice_sites'] == 1
+    assert (
+        result.best_quality_metrics['regulatory_post_selection_score']
+        > bad_run.quality_metrics['regulatory_post_selection_score']
+    )
+
+
+def test_regulatory_constructability_gate_is_relaxed_vs_repeat_guard():
+    target_gc = utils.get_target_gc('hsapiens')
+    target_gc3 = utils.get_target_gc3('hsapiens')
+    metrics = {
+        'protein_identity_ok': True,
+        'cai': 0.62,
+        'gc': target_gc,
+        'gc3': target_gc3,
+        'longest_gc_only_run': 10,
+        'longest_homopolymer': 5,
+        'max_dinuc_tandem_bases': 10,
+        'max_trinuc_tandem_bases': 10,
+        'strict_degenerate_example_count': 1,
+        'repeat_frac_bad': 0.30,
+    }
+
+    assert not hybrid_pipeline.is_degeneracy_clean_candidate(metrics)
+    assert hybrid_pipeline.regulatory_constructability_failures(
+        metrics,
+        target_gc=target_gc,
+        target_gc3=target_gc3,
+    ) == ()
+
+    severe = {**metrics, 'longest_gc_only_run': 15}
+
+    assert hybrid_pipeline.regulatory_constructability_failures(
+        severe,
+        target_gc=target_gc,
+        target_gc3=target_gc3,
+    ) == ('severe_gc_run',)
+
+
+def test_long_repeat_burden_metrics_detect_broad_distributed_repeats():
+    sequence = 'ATGAAAAA' * 300
+    metrics = degeneracy.compute_degeneracy_metrics(sequence)
+
+    assert metrics['long_repeat_mode']
+    assert metrics['repeat_frac_bad'] > 0.45
+    assert metrics['long_repeat_bad_region_span_fraction'] > 0.60
+    assert metrics['long_repeat_broad_burden']
+    assert metrics['long_repeat_segment_count'] == 2
+    assert metrics['long_repeat_junction_window_count'] > 0
+
+
+def test_regulatory_constructability_uses_long_broad_repeat_gate():
+    common = {
+        'protein_identity_ok': True,
+        'cai': 0.70,
+        'longest_gc_only_run': 10,
+        'longest_homopolymer': 5,
+        'max_dinuc_tandem_bases': 10,
+        'max_trinuc_tandem_bases': 10,
+        'repeat_frac_bad': 0.46,
+        'length_bp': 5600,
+        'long_repeat_mode': True,
+    }
+
+    broad = {
+        **common,
+        'long_repeat_bad_region_span_fraction': 0.61,
+    }
+    local = {
+        **common,
+        'long_repeat_bad_region_span_fraction': 0.55,
+        'long_repeat_segment_frac_bad_max': 0.80,
+    }
+    short = {
+        **common,
+        'length_bp': 1500,
+        'long_repeat_mode': False,
+        'long_repeat_bad_region_span_fraction': 0.90,
+    }
+
+    assert hybrid_pipeline.regulatory_constructability_failures(broad) == (
+        'broad_repeat_burden',
+    )
+    assert hybrid_pipeline.regulatory_constructability_failures(local) == ()
+    assert hybrid_pipeline.regulatory_constructability_failures(short) == (
+        'repeat_frac_bad',
+    )
+
+
+def test_regulatory_constructability_keeps_local_tandem_separate_from_broad_burden():
+    cacna1f_like = {
+        'protein_identity_ok': True,
+        'cai': 0.70,
+        'longest_gc_only_run': 10,
+        'longest_homopolymer': 5,
+        'max_dinuc_tandem_bases': 0,
+        'max_trinuc_tandem_bases': 51,
+        'repeat_frac_bad': 0.27,
+        'length_bp': 5901,
+        'long_repeat_mode': True,
+        'long_repeat_bad_region_span_fraction': 0.38,
+        'long_repeat_segment_frac_bad_max': 0.71,
+    }
+
+    assert hybrid_pipeline.regulatory_constructability_failures(cacna1f_like) == (
+        'severe_trinuc_tandem',
+    )
+
+
+def test_regulatory_post_selection_score_is_non_saturating_for_splice():
+    baseline = {
+        'regulatory_default_motifs': 0,
+        'regulatory_custom_motifs': 0,
+        'regulatory_splice_sites': 20,
+        'regulatory_internal_atg': 0,
+    }
+    common = {
+        'length_bp': 1000,
+        'protein_identity_ok': True,
+        'regulatory_default_motifs': 0,
+        'regulatory_custom_motifs': 0,
+        'regulatory_total_motifs': 0,
+        'regulatory_internal_atg': 0,
+        'cai': 0.75,
+        'tai': 0.32,
+        'degeneracy_score': 1.0,
+        'repeat_frac_bad': 0.0,
+    }
+
+    score_five_splice = hybrid_pipeline.regulatory_post_selection_score(
+        {**common, 'regulatory_splice_sites': 5},
+        baseline_metrics=baseline,
+    )
+    score_ten_splice = hybrid_pipeline.regulatory_post_selection_score(
+        {**common, 'regulatory_splice_sites': 10},
+        baseline_metrics=baseline,
+    )
+
+    assert score_five_splice > score_ten_splice
+
+
 def test_hybrid_candidate_rank_prefers_degeneracy_clean_sequence():
     high_objective_with_gc_run = {
         'protein_identity_ok': True,
@@ -180,12 +608,29 @@ def test_hybrid_candidate_rank_prefers_degeneracy_clean_sequence():
 def test_sequence_quality_metrics_reports_strict_degeneracy_fields():
     sequence = 'ATG' + 'GCGCCGCG' + 'GCT' * 5 + 'TAA'
     metrics = hybrid_pipeline.sequence_quality_metrics(sequence, host='ecoli')
+    shared_metrics = degeneracy.compute_degeneracy_metrics(sequence)
 
+    repeat_window, repeat_step = utils.repeat_penalty_window_params(len(sequence))
+
+    assert metrics['repeat_window_nt'] == repeat_window
+    assert metrics['repeat_step_nt'] == repeat_step
+    assert metrics['degeneracy_score'] == pytest.approx(shared_metrics['degeneracy_score'])
     assert metrics['longest_gc_only_run'] >= 8
     assert metrics['gc_runs_ge_threshold'] >= 1
     assert metrics['strict_degenerate_example_count'] >= 1
     assert metrics['degeneracy_score'] > 0
     assert not hybrid_pipeline.is_degeneracy_clean_candidate(metrics)
+
+
+def test_sequence_quality_metrics_reports_long_repeat_burden_fields():
+    sequence = 'ATGAAAAA' * 300
+    metrics = hybrid_pipeline.sequence_quality_metrics(sequence, host='ecoli')
+
+    assert metrics['long_repeat_mode']
+    assert metrics['long_repeat_window_nt'] == degeneracy.LONG_REPEAT_LOCAL_WINDOW_NT
+    assert metrics['long_repeat_step_nt'] == degeneracy.LONG_REPEAT_LOCAL_STEP_NT
+    assert metrics['long_repeat_bad_region_span_fraction'] > 0.60
+    assert metrics['long_repeat_broad_burden']
 
 
 def test_parse_seed_list_rejects_empty_input():
@@ -479,8 +924,17 @@ def test_main_notebook_code_cells_compile_and_keep_host_aware_backtranslation():
     assert "PREOPTIMIZATION: Optimization complete" in joined
     assert "if pipeline != 'preoptimization_only':" in joined
     assert "print('\\nFinal Optimized Sequence:')" in joined
-    assert joined.count("'codon_pair_bias': weight_sliders['cps'].value") == 2
-    assert joined.count("'tai': weight_sliders['tai'].value") == 2
+    assert "DEFAULT_WEIGHTS = fitness_weights_to_notebook_weights(" in joined
+    assert "preset_weights_for_host(DEFAULT_OPTIMIZATION_PRESET, 'hsapiens')" in joined
+    assert "preset_dropdown = Dropdown(" in joined
+    assert "preset_section = VBox([" in joined
+    assert "preset_dropdown.observe(on_preset_change, names = 'value')" in joined
+    assert "selected_optimization_preset()" in joined
+    assert "active_fitness_weights(host)" in joined
+    assert "multi_seed_regulatory_ga_polish(" in joined
+    assert "regulatory_candidate_rank(r.quality_metrics, r.fitness)" in joined
+    assert "preset_weights_for_host(preset.name, host)" in joined
+    assert "preset_dropdown.value == CUSTOM_PRESET_NAME" in joined
     assert "calculate_codon_pair_score" in joined
     assert "calculate_tai" in joined
     assert "Final codon-pair score:" in joined
@@ -489,3 +943,4 @@ def test_main_notebook_code_cells_compile_and_keep_host_aware_backtranslation():
     assert "value = 'hybrid'," in joined
     assert "on_pipeline_change({'new': pipeline_dropdown.value})" in joined
     assert "on_codon_method_change({'new': codon_method_dropdown.value})" in joined
+    assert "refresh_preset_dropdown_options()" in joined

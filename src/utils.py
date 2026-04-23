@@ -1055,10 +1055,57 @@ def count_repetitive_sequences(
     return penalty * (per_bp_scale / len(sequence))
 
 
+REPEAT_WINDOW_MIN_SEQUENCE_NT = 100
+REPEAT_WINDOW_MAX_SEQUENCE_NT = 2000
+REPEAT_WINDOW_MIN_NT = 30
+REPEAT_WINDOW_MAX_NT = 500
+REPEAT_WINDOW_INCREMENT_NT = 10
+
+
+def repeat_penalty_window_params(
+    sequence_length: int,
+    *,
+    min_sequence_length: int = REPEAT_WINDOW_MIN_SEQUENCE_NT,
+    max_sequence_length: int = REPEAT_WINDOW_MAX_SEQUENCE_NT,
+    min_window: int = REPEAT_WINDOW_MIN_NT,
+    max_window: int = REPEAT_WINDOW_MAX_NT,
+    window_increment: int = REPEAT_WINDOW_INCREMENT_NT,
+) -> Tuple[int, int]:
+    """
+    Resolve length-aware repeat scan window/step settings.
+
+    The caller should pass the validated sequence length that is actually
+    scored by the optimizer. Windows scale linearly from 30/15 nt at 100 nt
+    to 500/250 nt at 2000 nt, rounded down to stable increments.
+    """
+    if sequence_length < 0:
+        raise ValueError('sequence_length must be non-negative')
+    if min_sequence_length <= 0 or max_sequence_length <= min_sequence_length:
+        raise ValueError('invalid sequence-length bounds')
+    if min_window <= 0 or max_window < min_window:
+        raise ValueError('invalid repeat-window bounds')
+    if window_increment <= 0:
+        raise ValueError('window_increment must be positive')
+
+    clipped_length = min(
+        max(sequence_length, min_sequence_length),
+        max_sequence_length,
+    )
+    span_fraction = (
+        (clipped_length - min_sequence_length)
+        / (max_sequence_length - min_sequence_length)
+    )
+    raw_window = min_window + span_fraction * (max_window - min_window)
+    rounded_window = int(math.floor(raw_window / window_increment) * window_increment)
+    window = min(max(rounded_window, min_window), max_window)
+    step = max(1, window // 2)
+    return window, step
+
+
 def repeat_penalty_windowed(
     sequence: str,
-    window: int = 300,
-    step: int = 150,
+    window: Optional[int] = None,
+    step: Optional[int] = None,
     threshold: float = 0.5,
 ) -> Tuple[float, float, float]:
     """
@@ -1066,6 +1113,14 @@ def repeat_penalty_windowed(
     (mean_per_window, max_per_window, frac_windows_above_threshold).
     """
     n = len(sequence)
+    auto_window, auto_step = repeat_penalty_window_params(n)
+    if window is None:
+        window = auto_window
+    if step is None:
+        step = auto_step if window == auto_window else max(1, int(window) // 2)
+    if window <= 0 or step <= 0:
+        raise ValueError('repeat penalty window and step must be positive')
+
     vals: List[float] = []
     if n <= window:
         vals.append(

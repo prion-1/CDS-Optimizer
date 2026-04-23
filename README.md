@@ -10,9 +10,10 @@ Given a DNA/RNA CDS or a protein sequence, the repository can:
 - back-translate protein to DNA with host-preferred codons through the core API
 - redesign synonymous codons for a target host
 - run deterministic preoptimization alone, preoptimization plus a genetic algorithm (GA), or the hybrid local-repair workflow with optional light GA polish
+- apply named GA preset profiles for repeat control, expression-oriented scoring, secondary-structure handling, and regulatory cleanup
 - optimize or score CAI, GC balance, GC3 balance, 5' folding heuristics, 5' accessibility proxies, motif avoidance, repeat avoidance, cryptic splice-site avoidance, internal ATG count, optional tAI, and empirical codon-pair bias where host data are bundled
 - preserve protein identity and the literal input start codon across preoptimization, GA, and local repair
-- compare input vs. optimized sequences with codon-usage, GC, GC3, complexity, and CHARMING-style harmonization readouts
+- compare input vs. optimized sequences with codon-usage, GC, GC3, complexity, CHARMING-style harmonization, and regulatory-cleanup readouts
 
 The bundled host set is discovered dynamically from `data/codon_tables/*.csv`:
 
@@ -25,8 +26,6 @@ The bundled host set is discovered dynamically from `data/codon_tables/*.csv`:
 | `spombe` | *Schizosaccharomyces pombe* | yes | yes |
 
 Dropping a new `<host>.csv` file into `data/codon_tables/` makes the host available to the loader. For notebook use, also add the host to `HOST_KINGDOM` in `src/utils.py` so the GUI knows whether to apply eukaryotic splice-site scoring.
-
-#TODO do this dynamically in the future; update codon table format
 
 > [!tip]
 > Launch the workbench via the binder below!
@@ -50,7 +49,77 @@ In practice:
 - `preoptimization_ga` gives the strongest aggregate optimization but can overwrite local preoptimization choices.
 - `hybrid` is the conservative path when you want to keep most preoptimization decisions while still cleaning local pathologies.
 
-The notebook GUI also exposes protein input, direct DNA/RNA input, target host selection, preoptimization method selection, percentile-matching source-host options, avoid-motif input, GA parameters, local-repair parameters, optional GA polish settings, fitness-weight sliders, complexity-plot settings, and progress reporting.
+The notebook GUI also exposes protein input, direct DNA/RNA input, target host selection, preoptimization method selection, percentile-matching source-host options, avoid-motif input, GA parameters, local-repair parameters, optional GA polish settings, named GA presets, fitness-weight sliders, complexity-plot settings, and progress reporting.
+
+## GA Presets and Selection Modes
+
+`src/presets.py` defines the current named GA weight profiles:
+
+| Preset | Selector | Current role |
+|--------|----------|--------------|
+| `repeat_guard` | generic GA | Default repeat/degeneracy-safe profile |
+| `expression_conservative` | generic GA | CAI/tAI/CPS-oriented profile with repeat pressure retained |
+| `secondary_structure` | generic GA | Stronger 5' folding penalty with repeat guard |
+| `secondary_accessibility` | generic GA | Folding plus explicit 5' accessibility pressure |
+| `regulatory_motif_high` | regulatory post-selection | Motif/splice cleanup profile |
+| `regulatory_construct_safe` | regulatory post-selection | Regulatory backup with stronger constructability pressure |
+
+Generic presets are available anywhere GA weights are active. Regulatory presets are only surfaced by the notebook when the `hybrid` pipeline and GA polish are both enabled, because they use the same GA engine but a different seed-selection policy.
+
+`preset_weights_for_host()` makes these presets host-aware by zeroing unsupported optional axes (`tai`, `codon_pair_bias`) and renormalizing the remaining weights.
+
+### How The Presets Were Developed
+
+The current preset layer was developed empirically, not invented as six
+independent weight vectors.
+
+1. The first stage was PINK1-focused hybrid tuning. Earlier defaults still let
+   through too many GC-only runs and repeat-like stretches, so the work
+   concentrated on constructability failures rather than chasing CAI alone.
+   That same sweep work set the current local-repair defaults
+   (`window_nt=36`, `max_subs_per_window=3`, `gc_tolerance=5.0`) and the
+   default GA-polish settings (`pop_size=20`, `generations=8`,
+   `mutation_rate=0.008`, seeds `1701,2701,3701,4701,5701`).
+2. The repeat-safe GA envelope tightened in three explicit steps in
+   `src/hybrid_pipeline.py`:
+   `REPEAT_GUARD_POLISH_WEIGHTS` (`repeats=0.18`, `cai=0.30`) ->
+   `DEGENERACY_GUARD_POLISH_WEIGHTS` (`repeats=0.32`, `cai=0.24`) ->
+   `EXTREME_REPEAT_GUARD_POLISH_WEIGHTS` (`repeats=0.42`, `cai=0.18`).
+   The shipped `repeat_guard` preset is this last profile, so the current
+   default is deliberately biased toward suppressing GC-run, tandem-repeat, and
+   low-complexity pathologies even when that means backing off raw CAI.
+3. Those candidate envelopes were then validated on a broader 16-CDS mixed
+   panel, documented in
+   `reports/20260422/preset_validation_panel_sweep_20260422_summary.md` and
+   generated by `tests/preset_validation_panel_sweeper.py`. That panel covered
+   short, medium, mid-long, and long constructs including PINK1, INS, HBB,
+   EPO, KRAS, ACTB, TP53, MYC, MECP2, CFTR, COL1A1, SCN5A, TSC2, CACNA1F,
+   BRCA1, and ABCA4. The full sweep evaluated
+   `16 genes * 6 profiles * 5 seeds = 480 candidates`, with one selected seed
+   per gene/profile for the summary analysis.
+4. The other generic presets were derived from that stabilized repeat-guard
+   baseline rather than from scratch, then kept or rejected based on the
+   broader panel behavior. `expression_conservative` restores more
+   expression-oriented pressure (`cai`, `tai`, `codon_pair_bias`) but still
+   keeps `repeats=0.30`; on the 16-CDS panel it had the highest selected pass
+   rate and highest mean selected CAI. `secondary_structure` pushes harder on
+   `folding_energy` (`0.34`) while retaining `repeats=0.30`; on the same panel
+   it had the best mean selected folding penalty and best mean selected
+   degeneracy among the secondary candidates. `secondary_accessibility`
+   branches further by making the explicit `accessibility` term non-zero while
+   still keeping repeat pressure active.
+5. The regulatory presets were developed as a separate branch because generic
+   GA fitness was not the right final selector for motif and splice cleanup.
+   `regulatory_motif_high` and `regulatory_construct_safe` therefore pair
+   motif/splice/internal-ATG-heavy weight envelopes with
+   `multi_seed_regulatory_ga_polish()`, which chooses the final seed by raw
+   regulatory cleanup metrics plus relaxed constructability gates instead of by
+   generic GA fitness alone.
+
+In other words, the preset layer is a set of operational envelopes built around
+observed failure modes in long CDS optimization: a repeat-safe default, a few
+controlled generic variants, and a separate regulatory branch with its own
+post-selection logic.
 
 ## Preoptimization Methods
 
@@ -104,6 +173,8 @@ Codon-pair bias is a GA fitness term, so it is active in `preoptimization_ga` an
 the optional GA polish step of `hybrid`; pure preoptimization and pure local
 repair do not optimize CPS directly.
 
+For repeat handling, the GA API also exposes `repeat_penalty_mode`. The current default is `legacy`, with `blend` and `aligned` available for stricter degeneracy-aware repeat scoring through the Python API.
+
 Protein identity is enforced, and the literal input start codon is preserved across initialization, crossover, mutation, and validation. Per-host codon tables and score vectors are cached for repeated fitness evaluation.
 
 ### Local repair
@@ -121,6 +192,11 @@ degeneracy-aware repeat/complexity quality metrics, and selects the best seed
 by those quality criteria rather than by GA fitness alone. The default polish
 weights use the strongest repeat-guard profile from those sweeps.
 
+For regulatory cleanup, `src.hybrid_pipeline.multi_seed_regulatory_ga_polish()`
+uses the same GA machinery but ranks seeds with raw motif, splice-site, and
+internal-ATG cleanup metrics plus relaxed constructability gates instead of the
+generic repeat-guard selector.
+
 ## Analysis Layer
 
 `src/gceh_module.py`, `src/complexity_analysis.py`, and analysis helpers in `src/utils.py` provide:
@@ -130,6 +206,7 @@ weights use the strongest repeat-guard profile from those sweeps.
 - cumulative GC3 plots
 - sliding-window GC and GC3 plots
 - sliding-window complexity tracks with entropy, GC balance, k-mer richness, homopolymer, periodicity, and invalid-base components
+- degeneracy-aware repeat-burden and low-complexity quality metrics for hybrid seed selection
 - programmatic CHARMING-style windowed CAI and `%MinMax` profile calculations
 - notebook CAI harmonization diagnostics: Pearson correlation, net absolute deviation, and mean absolute deviation between input and optimized profiles
 
@@ -197,6 +274,7 @@ The notebook is the easiest entry point, but the same pipeline pieces can be cal
 from src.pre_optimization import optimize_codons
 from src.local_repair import local_repair
 from src.hybrid_pipeline import multi_seed_ga_polish
+from src.presets import PRESET_REPEAT_GUARD, preset_weights_for_host
 from src.utils import get_target_gc, is_eukaryote_host
 
 input_cds = "ATGGCTGACTAA"
@@ -216,13 +294,18 @@ polish_result = multi_seed_ga_polish(
     host=host,
     is_eukaryote=is_eukaryote,
     target_gc=get_target_gc(host),
+    weights=preset_weights_for_host(PRESET_REPEAT_GUARD, host),
 )
 optimized = polish_result.best_sequence
 ```
 
+For regulatory presets, use `multi_seed_regulatory_ga_polish()` with one of the
+regulatory preset names from `src.presets` instead of the generic
+`multi_seed_ga_polish()` selector.
+
 ## Testing
 
-The active tests cover pipeline preservation of translation/start codons, local repair regressions, complexity-track sizing, optional codon-pair behavior, host-specific GC3 targets, notebook code-cell compilation, harmonization diagnostics, and heuristic splice-site handling.
+The active tests cover pipeline preservation of translation/start codons, local repair regressions, named preset behavior, generic and regulatory multi-seed selection, degeneracy metrics, complexity-track sizing, optional codon-pair behavior, host-specific GC3 targets, notebook code-cell compilation, harmonization diagnostics, and heuristic splice-site handling.
 They also validate that bundled empirical codon-pair tables are complete,
 finite 61 x 61 sense-codon matrices and that bundled tAI weights are complete,
 positive, finite 61-sense-codon vectors.
@@ -246,11 +329,13 @@ CDS Optimizer/
 ├── src/
 │   ├── __init__.py
 │   ├── complexity_analysis.py
+│   ├── degeneracy.py
 │   ├── gceh_module.py
 │   ├── hybrid_pipeline.py
 │   ├── local_repair.py
 │   ├── optimization.py
 │   ├── pre_optimization.py
+│   ├── presets.py
 │   └── utils.py
 ├── data/
 │   ├── codon_pair_tables/
