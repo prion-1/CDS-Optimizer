@@ -15,6 +15,7 @@
 !src/degeneracy.py
 !src/gceh_module.py
 !src/hybrid_pipeline.py
+!src/input_processing.py
 !src/local_repair.py
 !src/optimization.py
 !src/pre_optimization.py
@@ -46,6 +47,7 @@
 !data/trna_weights/README.md
 
 !tests/
+!tests/test_input_processing.py
 !tests/test_pipeline.py
 !tests/test_regressions.py
 

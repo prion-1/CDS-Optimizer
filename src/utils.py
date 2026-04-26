@@ -27,6 +27,7 @@ import re
 import math
 import warnings
 import functools
+from importlib import metadata as importlib_metadata
 import pandas as pd
 import numpy as np
 from typing import Callable, Dict, List, Tuple, Optional
@@ -47,6 +48,43 @@ try:
 except ImportError:
     VIENNA_AVAILABLE = False
     print("Warning: ViennaRNA not installed. Using simplified folding energy calculations.")
+
+
+def _module_version(module: object, distribution_name: str) -> str:
+    """Best-effort package version for optional runtime diagnostics."""
+
+    version = getattr(module, '__version__', None)
+    if version:
+        return str(version)
+    try:
+        return importlib_metadata.version(distribution_name)
+    except importlib_metadata.PackageNotFoundError:
+        return 'version unknown'
+
+
+def optional_backend_report() -> List[str]:
+    """Human-readable status lines for optional acceleration/science backends."""
+
+    lines: List[str] = []
+    if NUMBA_AVAILABLE:
+        lines.append(
+            f"Numba: loaded {_module_version(nb, 'numba')} successfully; "
+            "JIT acceleration active."
+        )
+    else:
+        lines.append('Numba: not installed; pure-Python fallback active.')
+
+    if VIENNA_AVAILABLE:
+        lines.append(
+            f"ViennaRNA: loaded {_module_version(RNA, 'ViennaRNA')} successfully; "
+            "RNA.fold MFE backend active."
+        )
+    else:
+        lines.append(
+            'ViennaRNA: not installed; deterministic GC/palindrome folding fallback active.'
+        )
+
+    return lines
 
 
 # ---------------------------------------------------------------------------

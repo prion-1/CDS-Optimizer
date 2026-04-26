@@ -13,6 +13,11 @@ from .pre_optimization import (
     structure_optimized_beam_search,
 )
 from .local_repair import local_repair
+from .input_processing import (
+    clean_nucleotide_sequence,
+    prepare_input_sequence,
+    validate_protein_sequence,
+)
 from .hybrid_pipeline import (
     DEFAULT_HYBRID_REPAIR_WINDOW_NT,
     DEFAULT_HYBRID_REPAIR_MAX_SUBS,
@@ -92,6 +97,7 @@ from .utils import (
     calculate_tai,
     tai_available_for,
     codon_pair_available_for,
+    optional_backend_report,
 )
 
 __version__ = "2.0.0"
@@ -104,6 +110,9 @@ __all__ = [
     'percentile_matching_optimization',
     'structure_optimized_beam_search',
     'local_repair',
+    'clean_nucleotide_sequence',
+    'prepare_input_sequence',
+    'validate_protein_sequence',
     'DEFAULT_HYBRID_REPAIR_WINDOW_NT',
     'DEFAULT_HYBRID_REPAIR_MAX_SUBS',
     'DEFAULT_HYBRID_REPAIR_GC_TOLERANCE',
@@ -178,4 +187,5 @@ __all__ = [
     'calculate_tai',
     'tai_available_for',
     'codon_pair_available_for',
+    'optional_backend_report',
 ]

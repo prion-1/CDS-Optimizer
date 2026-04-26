@@ -866,6 +866,18 @@ def test_tai_loader_rejects_incomplete_weight_tables(tmp_path, monkeypatch):
         utils.load_tai_weights('testhost')
 
 
+def test_optional_backend_report_names_numba_and_viennarna_status():
+    lines = utils.optional_backend_report()
+
+    assert len(lines) == 2
+    assert lines[0].startswith('Numba:')
+    assert lines[1].startswith('ViennaRNA:')
+    assert all(
+        ('loaded' in line and 'successfully' in line) or 'fallback active' in line
+        for line in lines
+    )
+
+
 def test_count_cryptic_splice_sites_uses_dependency_free_heuristic():
     sequence = 'CAGGTAAGTAAAAAATTTTTTCAGAAAA'
 
@@ -918,8 +930,12 @@ def test_main_notebook_code_cells_compile_and_keep_host_aware_backtranslation():
     joined = '\n'.join(code_text)
     assert "warnings.filterwarnings('ignore')" not in joined
     assert "{', '.join" not in joined
-    assert 'f\'Invalid amino acids: {", ".join(invalid_chars)}\'' in joined
-    assert 'f\'Invalid nucleotides: {", ".join(invalid_chars)}\'' in joined
+    assert "from src.input_processing import clean_nucleotide_sequence, validate_protein_sequence" in joined
+    assert "clean_seq, error, cleanup_messages = clean_nucleotide_sequence(dna_input.value)" in joined
+    assert "optional_backend_report," in joined
+    assert "print('OPTIONAL BACKENDS')" in joined
+    assert "for line in optional_backend_report():" in joined
+    assert "for message in cleanup_messages:" in joined
     assert "back_translate_protein(clean_protein, host_dropdown.value)" in joined
     assert "PREOPTIMIZATION: Optimization complete" in joined
     assert "if pipeline != 'preoptimization_only':" in joined
