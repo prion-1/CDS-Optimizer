@@ -2,6 +2,7 @@
 
 !.gitignore
 !README.md
+!algorithms.md
 !LICENSE
 !main.ipynb
 
@@ -13,6 +14,7 @@
 !src/__init__.py
 !src/complexity_analysis.py
 !src/degeneracy.py
+!src/diversification.py
 !src/gceh_module.py
 !src/hybrid_pipeline.py
 !src/input_processing.py

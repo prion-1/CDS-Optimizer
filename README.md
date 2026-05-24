@@ -12,6 +12,7 @@ Given a DNA/RNA CDS or a protein sequence, the repository can:
 - run deterministic preoptimization alone, preoptimization plus a genetic algorithm (GA), or a hybrid local-repair workflow with optional light GA polish.
 - apply GA preset profiles for repeat control, expression-oriented scoring, secondary-structure handling, and regulatory cleanup
 - optimize or score CAI, GC balance, GC3 balance, 5' folding heuristics, 5' accessibility proxies, motif avoidance, repeat avoidance, cryptic splice-site avoidance, internal ATG count, tAI, and empirical codon-pair bias where host data are bundled
+- use the optional macro-repeat masker to diversify user-declared repeated coding regions so repeated protein domains can remain synonymous while avoiding identical DNA encodings
 - preserve protein identity and the exact input start codon across preoptimization, GA, and local repair, which matters for alternative initiators such as bacterial `GTG`
 - compare input vs. optimized sequences with codon-usage, GC, GC3, complexity, CHARMING-style harmonization, and regulatory-cleanup readouts
 
@@ -50,7 +51,7 @@ In practice:
 - `preoptimization_ga` runs the GA after preoptimization and exposes generic GA presets plus fitness-weight sliders.
 - `hybrid` is the conservative path when you want to keep most preoptimization decisions while still cleaning local pathologies; if GA polish is enabled, it exposes GA presets and weights for the polish step.
 
-The notebook GUI exposes protein input, direct DNA/RNA input, target host selection, preoptimization method selection, percentile-matching source-host options, avoid-motif input, GA parameters, local-repair parameters, optional GA polish settings, named GA presets, fitness-weight sliders, complexity-plot settings, and progress reporting.
+The notebook GUI exposes protein input, direct DNA/RNA input, target host selection, preoptimization method selection, percentile-matching source-host options, avoid-motif input, macro-repeat masker input, GA parameters, local-repair parameters, optional GA polish settings, named GA presets, fitness-weight sliders, complexity-plot settings, and progress reporting.
 
 ## GA Presets and Selection Modes
 
@@ -157,6 +158,26 @@ repair do not optimize CPS directly.
 For repeat handling, the GA API also exposes `repeat_penalty_mode`. The current default is `legacy`, with `blend` and `aligned` available for stricter degeneracy-aware repeat scoring through the Python API.
 
 Protein identity is enforced, and the exact input start codon is pinned so optimization does not silently rewrite alternative initiators such as `GTG` while preserving the same translated amino acid. Per-host codon tables and score vectors are cached for repeated fitness evaluation.
+
+### Macro-repeat masker
+
+The macro-repeat masker is implemented by `src.diversification`. It accepts one
+optional comma-separated mask input for large repeated coding regions, such as
+repeated protein domains. Masks are interpreted as either amino-acid sequences or
+in-frame nucleotide sequences. Each mask must occur at least
+twice in the input sequence, masks must be non-overlapping, nucleotide masks must be frame-aligned and
+divisible by 3, and the resolved coordinate ranges are carried through later
+synonymous edits. The diversification pass runs after preoptimization and before
+local repair. It uses an adaptive pairwise-identity gate based on the
+mathematically possible codon-degeneracy limit for the masked amino-acid
+sequence, limits exact shared consecutive DNA to 12 nt by default, and keeps
+masked-region CAI at least 40% of the pre-diversification masked-region CAI.
+
+Later GA fitness and hybrid/regulatory seed selection receive the same mask plan
+so polishing discourages candidates that collapse diversified copies back to
+identical high-CAI codons. The notebook reports the resolved CDS-coordinate mask
+map, per-mask pass/fail metrics, maximum pairwise identity, longest exact shared
+DNA stretch, and masked-region CAI retention.
 
 ### Local repair
 
@@ -312,6 +333,7 @@ CDS Optimizer/
 │   ├── __init__.py
 │   ├── complexity_analysis.py
 │   ├── degeneracy.py
+│   ├── diversification.py
 │   ├── gceh_module.py
 │   ├── hybrid_pipeline.py
 │   ├── input_processing.py

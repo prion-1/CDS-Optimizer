@@ -33,6 +33,10 @@ from .degeneracy import (
     normalize_ga_repeat_penalty,
     normalize_ga_repeat_penalty_mode,
 )
+from .diversification import (
+    DiversificationPlan,
+    calculate_diversification_metrics,
+)
 from .utils import (
     load_codon_table,
     calculate_cai,
@@ -65,6 +69,8 @@ from .utils import (
 # ---------------------------------------------------------------------------
 # Fitness configuration
 # ---------------------------------------------------------------------------
+
+DEFAULT_DIVERSIFICATION_FITNESS_PENALTY_WEIGHT = 0.45
 
 @dataclass
 class FitnessWeights:
@@ -118,6 +124,8 @@ def fitness_function(
     repeat_penalty_mode: str = DEFAULT_GA_REPEAT_PENALTY_MODE,
     strict_degeneracy_weight: float = DEFAULT_GA_STRICT_DEGENERACY_WEIGHT,
     repeat_penalty_scale: float = DEFAULT_GA_REPEAT_PENALTY_SCALE,
+    diversification_plan: Optional[DiversificationPlan] = None,
+    diversification_penalty_weight: float = DEFAULT_DIVERSIFICATION_FITNESS_PENALTY_WEIGHT,
 ) -> Tuple[float, Dict[str, Any]]:
     """
     Compute the multi-objective fitness score for a sequence.
@@ -273,6 +281,23 @@ def fitness_function(
         metrics['codon_pair_score'] = 0.0
         metrics['cps_normalized'] = 0.0
 
+    # 12. Declared repeated-region diversification (constraint-style penalty)
+    diversification_metrics = calculate_diversification_metrics(
+        sequence,
+        diversification_plan,
+        host,
+        codon_table=codon_table,
+    )
+    metrics.update({
+        key: value
+        for key, value in diversification_metrics.items()
+        if key != 'diversification_group_metrics'
+    })
+    if 'diversification_group_metrics' in diversification_metrics:
+        metrics['diversification_group_metrics'] = diversification_metrics[
+            'diversification_group_metrics'
+        ]
+
     fitness = (
         weights.cai * metrics['cai']
         - weights.gc_deviation * metrics['gc_deviation']
@@ -285,6 +310,7 @@ def fitness_function(
         + weights.accessibility * metrics['accessibility']
         + weights.tai * metrics['tai']
         + weights.codon_pair_bias * metrics['cps_normalized']
+        - diversification_penalty_weight * metrics['diversification_penalty']
     )
 
     metrics['fitness'] = fitness
@@ -317,6 +343,8 @@ class GeneticAlgorithm:
         repeat_penalty_mode: str = DEFAULT_GA_REPEAT_PENALTY_MODE,
         strict_degeneracy_weight: float = DEFAULT_GA_STRICT_DEGENERACY_WEIGHT,
         repeat_penalty_scale: float = DEFAULT_GA_REPEAT_PENALTY_SCALE,
+        diversification_plan: Optional[DiversificationPlan] = None,
+        diversification_penalty_weight: float = DEFAULT_DIVERSIFICATION_FITNESS_PENALTY_WEIGHT,
     ):
         self.initial_sequence = initial_sequence.upper()
         self.start_codon = self.initial_sequence[:3]
@@ -335,6 +363,8 @@ class GeneticAlgorithm:
         self.repeat_penalty_mode = normalize_ga_repeat_penalty_mode(repeat_penalty_mode)
         self.strict_degeneracy_weight = strict_degeneracy_weight
         self.repeat_penalty_scale = repeat_penalty_scale
+        self.diversification_plan = diversification_plan
+        self.diversification_penalty_weight = diversification_penalty_weight
 
         if random_seed is not None:
             random.seed(random_seed)
@@ -421,6 +451,8 @@ class GeneticAlgorithm:
                 repeat_penalty_mode=self.repeat_penalty_mode,
                 strict_degeneracy_weight=self.strict_degeneracy_weight,
                 repeat_penalty_scale=self.repeat_penalty_scale,
+                diversification_plan=self.diversification_plan,
+                diversification_penalty_weight=self.diversification_penalty_weight,
             )
             evaluated.append((seq, fitness, metrics))
         evaluated.sort(key=lambda x: x[1], reverse=True)
@@ -574,6 +606,8 @@ def genetic_algorithm(
     repeat_penalty_mode: str = DEFAULT_GA_REPEAT_PENALTY_MODE,
     strict_degeneracy_weight: float = DEFAULT_GA_STRICT_DEGENERACY_WEIGHT,
     repeat_penalty_scale: float = DEFAULT_GA_REPEAT_PENALTY_SCALE,
+    diversification_plan: Optional[DiversificationPlan] = None,
+    diversification_penalty_weight: float = DEFAULT_DIVERSIFICATION_FITNESS_PENALTY_WEIGHT,
 ) -> Tuple[str, float, Dict[str, Any]]:
     """
     Convenience wrapper that constructs a GeneticAlgorithm with weights
@@ -600,5 +634,7 @@ def genetic_algorithm(
         repeat_penalty_mode=repeat_penalty_mode,
         strict_degeneracy_weight=strict_degeneracy_weight,
         repeat_penalty_scale=repeat_penalty_scale,
+        diversification_plan=diversification_plan,
+        diversification_penalty_weight=diversification_penalty_weight,
     )
     return ga.run(verbose=verbose)

@@ -25,6 +25,7 @@ from .degeneracy import (
     finite_or as _finite_or,
     is_degeneracy_clean_candidate,
 )
+from .diversification import DiversificationPlan, calculate_diversification_metrics
 from .optimization import genetic_algorithm
 from .utils import (
     calculate_cai,
@@ -252,6 +253,7 @@ def sequence_quality_metrics(
     complexity_step: int = 30,
     complexity_k: int = 3,
     complexity_alpha: float = 1.0,
+    diversification_plan: Optional[DiversificationPlan] = None,
 ) -> Dict[str, Any]:
     """Compute the lightweight quality metrics used for hybrid-polish ranking."""
 
@@ -282,6 +284,12 @@ def sequence_quality_metrics(
         'sequence_sha256': hashlib.sha256(sequence.encode('ascii')).hexdigest()[:16],
     }
     metrics.update(degeneracy_metrics)
+    metrics.update(calculate_diversification_metrics(
+        sequence,
+        diversification_plan,
+        host,
+        codon_table=codon_table,
+    ))
     return metrics
 
 
@@ -319,6 +327,7 @@ def hybrid_candidate_rank(metrics: Dict[str, Any], fitness: float = 0.0) -> Tupl
 
     return (
         1.0 if metrics.get('protein_identity_ok') else 0.0,
+        1.0 if metrics.get('diversification_pass', True) else 0.0,
         1.0 if is_degeneracy_clean_candidate(metrics) else 0.0,
         1.0 if is_clean_hybrid_candidate(metrics) else 0.0,
         1.0 if is_strict_hybrid_candidate(metrics) else 0.0,
@@ -330,6 +339,9 @@ def hybrid_candidate_rank(metrics: Dict[str, Any], fitness: float = 0.0) -> Tupl
         -_finite_or(metrics.get('repeat_mean'), math.inf),
         -_finite_or(metrics.get('repeat_max'), math.inf),
         -_finite_or(metrics.get('repeat_frac_bad'), math.inf),
+        -_finite_or(metrics.get('diversification_penalty'), math.inf),
+        -_finite_or(metrics.get('diversification_longest_exact_shared_nt'), math.inf),
+        -_finite_or(metrics.get('diversification_max_pairwise_identity'), math.inf),
         -_finite_or(metrics.get('homopolymer_runs_ge5'), math.inf),
         -_finite_or(metrics.get('longest_homopolymer'), math.inf),
         _finite_or(metrics.get('complexity_mean'), -math.inf),
@@ -570,6 +582,7 @@ def regulatory_candidate_rank(
     return (
         1.0 if metrics.get('protein_identity_ok') else 0.0,
         1.0 if failure_count == 0 else 0.0,
+        1.0 if metrics.get('diversification_pass', True) else 0.0,
         -float(failure_count),
         score,
         -_finite_or(metrics.get('regulatory_total_motifs'), math.inf),
@@ -578,6 +591,9 @@ def regulatory_candidate_rank(
         -_finite_or(metrics.get('regulatory_splice_sites'), math.inf),
         -_finite_or(metrics.get('regulatory_internal_atg'), math.inf),
         -_finite_or(metrics.get('repeat_frac_bad'), math.inf),
+        -_finite_or(metrics.get('diversification_penalty'), math.inf),
+        -_finite_or(metrics.get('diversification_longest_exact_shared_nt'), math.inf),
+        -_finite_or(metrics.get('diversification_max_pairwise_identity'), math.inf),
         -_finite_or(metrics.get('long_repeat_bad_region_span_fraction'), 0.0),
         -_finite_or(metrics.get('long_repeat_segment_frac_bad_max'), 0.0),
         -_finite_or(metrics.get('long_repeat_junction_repeat_max'), 0.0),
@@ -610,6 +626,7 @@ def multi_seed_ga_polish(
     repeat_penalty_mode: str = DEFAULT_GA_REPEAT_PENALTY_MODE,
     strict_degeneracy_weight: float = DEFAULT_GA_STRICT_DEGENERACY_WEIGHT,
     repeat_penalty_scale: float = DEFAULT_GA_REPEAT_PENALTY_SCALE,
+    diversification_plan: Optional[DiversificationPlan] = None,
 ) -> MultiSeedPolishResult:
     """
     Run GA polish across seeds and select by hybrid sequence-quality metrics.
@@ -653,6 +670,7 @@ def multi_seed_ga_polish(
             repeat_penalty_mode=repeat_penalty_mode,
             strict_degeneracy_weight=strict_degeneracy_weight,
             repeat_penalty_scale=repeat_penalty_scale,
+            diversification_plan=diversification_plan,
         )
 
         quality_metrics = sequence_quality_metrics(
@@ -664,6 +682,7 @@ def multi_seed_ga_polish(
             complexity_step=complexity_step,
             complexity_k=complexity_k,
             complexity_alpha=complexity_alpha,
+            diversification_plan=diversification_plan,
         )
         if not quality_metrics['protein_identity_ok']:
             raise AssertionError(f'GA polish changed protein identity for seed {seed}.')
@@ -712,6 +731,7 @@ def multi_seed_regulatory_ga_polish(
     repeat_penalty_mode: str = DEFAULT_GA_REPEAT_PENALTY_MODE,
     strict_degeneracy_weight: float = DEFAULT_GA_STRICT_DEGENERACY_WEIGHT,
     repeat_penalty_scale: float = DEFAULT_GA_REPEAT_PENALTY_SCALE,
+    diversification_plan: Optional[DiversificationPlan] = None,
 ) -> MultiSeedPolishResult:
     """
     Run GA polish across seeds and select by regulatory post-selection metrics.
@@ -765,6 +785,7 @@ def multi_seed_regulatory_ga_polish(
             repeat_penalty_mode=repeat_penalty_mode,
             strict_degeneracy_weight=strict_degeneracy_weight,
             repeat_penalty_scale=repeat_penalty_scale,
+            diversification_plan=diversification_plan,
         )
 
         quality_metrics = sequence_quality_metrics(
@@ -776,6 +797,7 @@ def multi_seed_regulatory_ga_polish(
             complexity_step=complexity_step,
             complexity_k=complexity_k,
             complexity_alpha=complexity_alpha,
+            diversification_plan=diversification_plan,
         )
         if not quality_metrics['protein_identity_ok']:
             raise AssertionError(f'GA polish changed protein identity for seed {seed}.')

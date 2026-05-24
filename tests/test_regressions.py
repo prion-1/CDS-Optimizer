@@ -12,6 +12,7 @@ from src.local_repair import local_repair
 from src.optimization import FitnessWeights, GeneticAlgorithm, fitness_function
 from src.pre_optimization import optimize_codons
 from src import degeneracy
+from src import diversification
 from src import presets
 from src import utils
 from src import hybrid_pipeline
@@ -211,6 +212,75 @@ def test_repeat_penalty_window_params_scale_with_sequence_length():
     assert 30 < window < 500
     assert window % 10 == 0
     assert step == window // 2
+
+
+def test_diversification_mask_validation_resolves_nucleotide_coordinates():
+    sequence = 'ATG' + 'GCT' * 6 + 'GGT' + 'GCT' * 6
+
+    plan = diversification.resolve_diversification_masks('GCT' * 6, sequence)
+
+    assert plan.mask_type == 'nucleotide'
+    assert len(plan.groups) == 1
+    group = plan.groups[0]
+    assert [(o.start_nt, o.end_nt) for o in group.occurrences] == [(3, 21), (24, 42)]
+    assert group.min_possible_pairwise_identity == pytest.approx(2 / 3)
+    assert group.max_pairwise_identity == pytest.approx(0.75)
+    assert group.max_exact_shared_nt == 12
+    assert group.min_region_cai_fraction == pytest.approx(0.40)
+
+
+def test_diversification_mask_validation_rejects_bad_masks():
+    sequence = 'ATG' + 'GCT' * 6 + 'GGT'
+
+    with pytest.raises(ValueError, match='at least twice'):
+        diversification.resolve_diversification_masks('GCT' * 6, sequence)
+
+    with pytest.raises(ValueError, match='divisible by 3'):
+        diversification.resolve_diversification_masks('GCTG', sequence)
+
+    with pytest.raises(ValueError, match='overlap'):
+        diversification.resolve_diversification_masks('GCT' * 6, 'ATG' + 'GCT' * 7)
+
+
+def test_diversification_pass_preserves_protein_and_reduces_declared_homology():
+    sequence = 'ATG' + 'GCT' * 6 + 'GGT' + 'GCT' * 6
+    plan = diversification.resolve_diversification_masks('A' * 6, sequence)
+    result = diversification.diversify_sequence(sequence, plan, 'ecoli')
+
+    assert utils.translate_dna_to_protein(result.sequence) == utils.translate_dna_to_protein(sequence)
+    assert result.sequence.startswith(sequence[:3])
+    assert result.sequence != sequence
+    assert result.metrics['diversification_pass']
+    assert result.metrics['diversification_max_pairwise_identity'] <= 0.75 + 1e-9
+    assert result.metrics['diversification_longest_exact_shared_nt'] <= 12
+    assert result.metrics['diversification_min_region_cai_fraction'] >= 0.40 - 1e-9
+
+
+def test_diversification_penalty_discourages_collapsed_ga_candidates():
+    sequence = 'ATG' + 'GCT' * 6 + 'GGT' + 'GCT' * 6
+    plan = diversification.resolve_diversification_masks('A' * 6, sequence)
+    diversified = diversification.diversify_sequence(sequence, plan, 'ecoli')
+    plan = diversified.plan
+    weights = _weights_with(cai=1.0)
+
+    collapsed_fitness, collapsed_metrics = fitness_function(
+        sequence,
+        'ecoli',
+        False,
+        weights=weights,
+        diversification_plan=plan,
+    )
+    diverse_fitness, diverse_metrics = fitness_function(
+        diversified.sequence,
+        'ecoli',
+        False,
+        weights=weights,
+        diversification_plan=plan,
+    )
+
+    assert not collapsed_metrics['diversification_pass']
+    assert diverse_metrics['diversification_pass']
+    assert diverse_fitness > collapsed_fitness
 
 
 def test_fitness_default_repeat_penalty_mode_is_legacy():
