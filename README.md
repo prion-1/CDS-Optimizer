@@ -443,6 +443,6 @@ taxids, source counts, and scoring details. Runtime CPS scoring skips
 stop-containing codon pairs because the bundled tables cover only 61 x 61
 sense-codon pairs.
 
-## Codon Table Format
+## License
 
 This project is licensed under GPL-3.0.
